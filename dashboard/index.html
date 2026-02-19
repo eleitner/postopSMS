@@ -1,0 +1,353 @@
+/**
+ * Triage Dashboard — Nurse Alert View
+ * 
+ * Standalone HTML dashboard served by the Express app.
+ * Shows open alerts sorted by severity, patient timeline, 
+ * acknowledge/resolve workflow, and aggregate stats.
+ */
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostOp SMS — Triage Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #242836;
+      --border: #2e3345;
+      --text: #e4e7ec;
+      --text2: #8b8fa3;
+      --critical: #ef4444;
+      --urgent: #f59e0b;
+      --monitor: #3b82f6;
+      --low: #22c55e;
+      --accent: #6366f1;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+    
+    .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header .subtitle { color: var(--text2); font-size: 13px; }
+    .header .badge { background: var(--critical); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; margin-left: 8px; }
+    
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    
+    .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .stat-card .label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+    
+    .section-title { font-size: 14px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+    
+    .alert-list { display: flex; flex-direction: column; gap: 8px; }
+    .alert-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: grid; grid-template-columns: 80px 1fr 200px; gap: 16px; align-items: start; transition: background 0.15s; }
+    .alert-card:hover { background: var(--surface2); }
+    
+    .severity-badge { padding: 4px 12px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; text-align: center; }
+    .severity-CRITICAL { background: var(--critical); color: white; }
+    .severity-URGENT { background: var(--urgent); color: #000; }
+    .severity-MONITOR { background: var(--monitor); color: white; }
+    .severity-LOW { background: var(--low); color: #000; }
+    
+    .alert-info .patient-name { font-weight: 600; font-size: 15px; }
+    .alert-info .procedure { color: var(--text2); font-size: 13px; }
+    .alert-info .reason { margin-top: 6px; font-size: 14px; line-height: 1.4; }
+    .alert-info .meta { color: var(--text2); font-size: 12px; margin-top: 4px; }
+    .alert-info .ai-summary { margin-top: 8px; padding: 8px; background: var(--surface2); border-radius: 4px; font-size: 13px; color: var(--text2); border-left: 2px solid var(--accent); }
+    
+    .alert-actions { display: flex; flex-direction: column; gap: 6px; }
+    .btn { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-ack { background: var(--accent); color: white; }
+    .btn-resolve { background: var(--low); color: #000; }
+    .btn-call { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    
+    .login-form { max-width: 360px; margin: 100px auto; background: var(--surface); padding: 32px; border-radius: 12px; border: 1px solid var(--border); }
+    .login-form h2 { margin-bottom: 20px; }
+    .login-form input { width: 100%; padding: 10px 12px; margin-bottom: 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
+    .login-form .btn { width: 100%; }
+    
+    .empty-state { text-align: center; padding: 48px; color: var(--text2); }
+    .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+    
+    .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+    .tab { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; background: transparent; color: var(--text2); border: 1px solid transparent; }
+    .tab.active { background: var(--surface); color: var(--text); border-color: var(--border); }
+    .tab:hover { color: var(--text); }
+    
+    .resolve-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .resolve-modal .modal-content { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 400px; }
+    .resolve-modal select, .resolve-modal textarea { width: 100%; padding: 8px; margin: 8px 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
+    .resolve-modal textarea { height: 80px; resize: vertical; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  
+  <script>
+    // ═══════════════════════════════════════════════════
+    // Minimal SPA — No build step required
+    // ═══════════════════════════════════════════════════
+    const API = window.location.origin + '/api';
+    let token = localStorage.getItem('postop_token');
+    let currentUser = null;
+    
+    async function api(path, opts = {}) {
+      const res = await fetch(API + path, {
+        ...opts,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(opts.headers || {}),
+        },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      if (res.status === 401) { token = null; localStorage.removeItem('postop_token'); render(); return null; }
+      return res.json();
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════
+    let state = {
+      view: 'alerts',     // alerts | patients | stats
+      alertFilter: 'open',
+      alerts: [],
+      patients: [],
+      stats: null,
+      resolveModal: null, // alert id being resolved
+      loading: false,
+    };
+    
+    // ═══════════════════════════════════════════════════
+    // DATA FETCHING
+    // ═══════════════════════════════════════════════════
+    async function loadAlerts() {
+      state.loading = true; render();
+      const data = await api(`/dashboard/alerts?status=${state.alertFilter}`);
+      state.alerts = data?.alerts || [];
+      state.loading = false; render();
+    }
+    
+    async function loadPatients() {
+      const data = await api('/patients?limit=100');
+      state.patients = data?.patients || []; render();
+    }
+    
+    async function loadStats() {
+      state.stats = await api('/dashboard/stats'); render();
+    }
+    
+    async function acknowledgeAlert(id) {
+      await api(`/dashboard/alerts/${id}`, { method: 'PATCH', body: { action: 'acknowledge' } });
+      loadAlerts();
+    }
+    
+    async function resolveAlert(id, note, outcome) {
+      await api(`/dashboard/alerts/${id}`, { method: 'PATCH', body: { action: 'resolve', note, callbackOutcome: outcome } });
+      state.resolveModal = null;
+      loadAlerts();
+    }
+    
+    async function login(email, password) {
+      const data = await api('/auth/login', { method: 'POST', body: { email, password } });
+      if (data?.token) {
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem('postop_token', token);
+        loadAlerts();
+      }
+      return data;
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // RENDER
+    // ═══════════════════════════════════════════════════
+    function render() {
+      const app = document.getElementById('app');
+      if (!token) { app.innerHTML = renderLogin(); return; }
+      
+      let content = '';
+      if (state.view === 'alerts') content = renderAlerts();
+      else if (state.view === 'patients') content = renderPatients();
+      else if (state.view === 'stats') content = renderStats();
+      
+      app.innerHTML = `
+        ${renderHeader()}
+        <div class="container">
+          <div class="tabs">
+            <div class="tab ${state.view === 'alerts' ? 'active' : ''}" onclick="switchView('alerts')">Alerts</div>
+            <div class="tab ${state.view === 'patients' ? 'active' : ''}" onclick="switchView('patients')">Patients</div>
+            <div class="tab ${state.view === 'stats' ? 'active' : ''}" onclick="switchView('stats')">Analytics</div>
+          </div>
+          ${content}
+        </div>
+        ${state.resolveModal ? renderResolveModal() : ''}
+      `;
+    }
+    
+    function renderHeader() {
+      const openCritical = state.alerts.filter(a => a.severity === 'CRITICAL' && a.status === 'open').length;
+      const openUrgent = state.alerts.filter(a => a.severity === 'URGENT' && a.status === 'open').length;
+      return `<div class="header">
+        <div>
+          <h1>PostOp SMS Triage ${openCritical > 0 ? `<span class="badge">${openCritical} CRITICAL</span>` : ''}</h1>
+          <div class="subtitle">TidalHealth Peninsula Regional</div>
+        </div>
+        <div style="font-size:13px;color:var(--text2)">
+          ${currentUser?.name || ''} · <a href="#" onclick="logout()" style="color:var(--accent)">Logout</a>
+        </div>
+      </div>`;
+    }
+    
+    function renderLogin() {
+      return `<div class="login-form">
+        <h2>PostOp SMS Triage</h2>
+        <div class="subtitle" style="margin-bottom:20px;color:var(--text2)">TidalHealth Peninsula Regional</div>
+        <input type="email" id="login-email" placeholder="Email" />
+        <input type="password" id="login-pass" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()" />
+        <div id="login-error" style="color:var(--critical);font-size:13px;margin-bottom:8px"></div>
+        <button class="btn btn-ack" onclick="doLogin()">Sign In</button>
+      </div>`;
+    }
+    
+    function renderAlerts() {
+      const filterBtns = ['open', 'acknowledged', 'resolved'].map(s =>
+        `<div class="tab ${state.alertFilter === s ? 'active' : ''}" onclick="setAlertFilter('${s}')">${s}</div>`
+      ).join('');
+      
+      if (state.alerts.length === 0) {
+        return `<div class="tabs" style="margin-bottom:12px">${filterBtns}</div>
+          <div class="empty-state"><div class="icon">✓</div><div>No ${state.alertFilter} alerts</div></div>`;
+      }
+      
+      return `
+        <div class="tabs" style="margin-bottom:12px">${filterBtns}</div>
+        <div style="background:var(--surface2);padding:10px 14px;border-radius:6px;font-size:12px;color:var(--text2);margin-bottom:12px">
+          📱 To contact a patient, text the Twilio number: <b>TEXT &lt;id&gt; &lt;message&gt;</b> to relay a message. Text <b>CMDS</b> for full command list.
+        </div>
+        <div class="alert-list">
+          ${state.alerts.map(a => `
+            <div class="alert-card">
+              <div><span class="severity-badge severity-${a.severity}">${a.severity}</span>
+                <div style="margin-top:6px;font-size:12px;color:var(--text2)">POD ${a.pod}</div>
+              </div>
+              <div class="alert-info">
+                <div class="patient-name">${a.patient_id_short}...</div>
+                <div class="procedure">${a.procedure_name} · Dr. ${a.surgeon_name}</div>
+                <div class="reason">${a.reason}</div>
+                <div class="meta">${a.source} alert · ${new Date(a.created_at).toLocaleString()}</div>
+                ${a.ai_summary ? `<div class="ai-summary">AI: ${a.ai_summary}</div>` : ''}
+                <div style="margin-top:6px;font-size:11px;color:var(--accent);font-family:monospace">
+                  SMS: TEXT ${a.patient_id_short} &lt;msg&gt; · STATUS ${a.patient_id_short}
+                </div>
+              </div>
+              <div class="alert-actions">
+                ${a.status === 'open' ? `
+                  <button class="btn btn-ack" onclick="acknowledgeAlert('${a.id}')">Acknowledge</button>
+                  <button class="btn btn-resolve" onclick="openResolve('${a.id}')">Resolve</button>
+                ` : a.status === 'acknowledged' ? `
+                  <button class="btn btn-resolve" onclick="openResolve('${a.id}')">Resolve</button>
+                ` : `
+                  <div style="font-size:12px;color:var(--text2)">${a.callback_outcome || 'resolved'}</div>
+                `}
+              </div>
+            </div>
+          `).join('')}
+        </div>`;
+    }
+    
+    function renderPatients() {
+      if (state.patients.length === 0) return '<div class="empty-state"><div class="icon">📋</div>No patients enrolled yet</div>';
+      return `
+        <div style="background:var(--surface2);padding:10px 14px;border-radius:6px;font-size:12px;color:var(--text2);margin-bottom:12px">
+          Patient identifiers are not displayed. To contact a patient, text the Twilio number: <b>TEXT &lt;id&gt; &lt;msg&gt;</b>
+        </div>
+        <div class="alert-list">
+        ${state.patients.map(p => `
+          <div class="alert-card" style="grid-template-columns:1fr 150px 100px">
+            <div class="alert-info">
+              <div class="patient-name" style="font-family:monospace">${p.patient_id_short}...</div>
+              <div class="procedure">${p.procedure_name} · Dr. ${p.surgeon_name}</div>
+              <div class="meta">Surgery: ${new Date(p.surgery_date).toLocaleDateString()} · POD ${p.current_pod}</div>
+            </div>
+            <div><span class="severity-badge severity-${p.status === 'active' ? 'MONITOR' : p.status === 'completed' ? 'LOW' : 'URGENT'}">${p.status}</span></div>
+            <div style="font-size:13px;color:var(--text2)">POD ${p.current_pod}</div>
+          </div>
+        `).join('')}
+      </div>`;
+    }
+    
+    function renderStats() {
+      if (!state.stats) return '<div class="empty-state">Loading stats...</div>';
+      const s = state.stats;
+      return `
+        <div class="stats-row">
+          <div class="stat-card"><div class="label">Total Enrolled</div><div class="value">${s.totalEnrolled || 0}</div></div>
+          <div class="stat-card"><div class="label">Engagement Rate</div><div class="value">${s.engagementRate || 'N/A'}</div></div>
+          <div class="stat-card"><div class="label">PHQ-2 Screened</div><div class="value">${s.phq2?.screened || 0}</div></div>
+          <div class="stat-card"><div class="label">PHQ-2 Positive</div><div class="value" style="color:var(--urgent)">${s.phq2?.positive || 0} (${s.phq2?.rate || 'N/A'})</div></div>
+        </div>
+        <div class="section-title">Alert History</div>
+        <pre style="background:var(--surface);padding:16px;border-radius:8px;font-size:12px;overflow:auto">${JSON.stringify(s.alerts, null, 2)}</pre>
+        <div class="section-title" style="margin-top:20px">Opioid Status by Phase</div>
+        <pre style="background:var(--surface);padding:16px;border-radius:8px;font-size:12px;overflow:auto">${JSON.stringify(s.opioidByPhase, null, 2)}</pre>
+      `;
+    }
+    
+    function renderResolveModal() {
+      return `<div class="resolve-modal" onclick="if(event.target===this)state.resolveModal=null,render()">
+        <div class="modal-content">
+          <h3 style="margin-bottom:12px">Resolve Alert</h3>
+          <label style="font-size:13px;color:var(--text2)">Callback outcome</label>
+          <select id="resolve-outcome">
+            <option value="no_action">No action needed</option>
+            <option value="advice_given">Advice given by phone</option>
+            <option value="office_visit">Office visit scheduled</option>
+            <option value="ed_referral">ED referral</option>
+            <option value="rx_change">Prescription change</option>
+          </select>
+          <label style="font-size:13px;color:var(--text2)">Note</label>
+          <textarea id="resolve-note" placeholder="Brief note..."></textarea>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-resolve" onclick="doResolve()">Resolve</button>
+            <button class="btn btn-call" onclick="state.resolveModal=null;render()">Cancel</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    
+    // ═══════════════════════════════════════════════════
+    // ACTIONS
+    // ═══════════════════════════════════════════════════
+    window.switchView = (v) => { state.view = v; render(); if (v === 'patients') loadPatients(); if (v === 'stats') loadStats(); };
+    window.setAlertFilter = (f) => { state.alertFilter = f; loadAlerts(); };
+    window.acknowledgeAlert = acknowledgeAlert;
+    window.openResolve = (id) => { state.resolveModal = id; render(); };
+    window.doResolve = () => {
+      const outcome = document.getElementById('resolve-outcome').value;
+      const note = document.getElementById('resolve-note').value;
+      resolveAlert(state.resolveModal, note, outcome);
+    };
+    window.doLogin = async () => {
+      const email = document.getElementById('login-email').value;
+      const pass = document.getElementById('login-pass').value;
+      const result = await login(email, pass);
+      if (result?.error) document.getElementById('login-error').textContent = result.error;
+    };
+    window.logout = () => { token = null; currentUser = null; localStorage.removeItem('postop_token'); render(); };
+    
+    // ═══════════════════════════════════════════════════
+    // INIT
+    // ═══════════════════════════════════════════════════
+    render();
+    if (token) loadAlerts();
+    
+    // Auto-refresh alerts every 30 seconds
+    setInterval(() => { if (token && state.view === 'alerts') loadAlerts(); }, 30000);
+  </script>
+</body>
+</html>
