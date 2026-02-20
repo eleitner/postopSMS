@@ -34,7 +34,7 @@ const PORT = process.env.PORT || 3000;
 // MIDDLEWARE
 // ═══════════════════════════════════════════════════
 
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   methods: ['GET', 'POST', 'PATCH', 'DELETE'],
