@@ -38,9 +38,9 @@ CREATE TABLE IF NOT EXISTS patients (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_patients_phone_hash ON patients(phone_hash);
-CREATE INDEX idx_patients_status ON patients(status);
-CREATE INDEX idx_patients_surgery_date ON patients(surgery_date);
+CREATE INDEX IF NOT EXISTS idx_patients_phone_hash ON patients(phone_hash);
+CREATE INDEX IF NOT EXISTS idx_patients_status ON patients(status);
+CREATE INDEX IF NOT EXISTS idx_patients_surgery_date ON patients(surgery_date);
 
 -- CHECK-IN SESSIONS
 CREATE TABLE IF NOT EXISTS checkin_sessions (
@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS checkin_sessions (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_sessions_patient ON checkin_sessions(patient_id);
-CREATE INDEX idx_sessions_status ON checkin_sessions(status);
-CREATE INDEX idx_sessions_scheduled ON checkin_sessions(scheduled_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_sessions_patient ON checkin_sessions(patient_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON checkin_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_scheduled ON checkin_sessions(scheduled_at) WHERE status = 'pending';
 
 -- INDIVIDUAL RESPONSES
 CREATE TABLE IF NOT EXISTS responses (
@@ -82,10 +82,10 @@ CREATE TABLE IF NOT EXISTS responses (
   alert_reason    TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_responses_session ON responses(session_id);
-CREATE INDEX idx_responses_patient ON responses(patient_id);
-CREATE INDEX idx_responses_key ON responses(question_key);
-CREATE INDEX idx_responses_alerts ON responses(alert_triggered) WHERE alert_triggered = TRUE;
+CREATE INDEX IF NOT EXISTS idx_responses_session ON responses(session_id);
+CREATE INDEX IF NOT EXISTS idx_responses_patient ON responses(patient_id);
+CREATE INDEX IF NOT EXISTS idx_responses_key ON responses(question_key);
+CREATE INDEX IF NOT EXISTS idx_responses_alerts ON responses(alert_triggered) WHERE alert_triggered = TRUE;
 
 -- TRIAGE ALERTS
 CREATE TABLE IF NOT EXISTS alerts (
@@ -109,9 +109,9 @@ CREATE TABLE IF NOT EXISTS alerts (
   nurse_sms_sid   TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_alerts_status ON alerts(status) WHERE status = 'open';
-CREATE INDEX idx_alerts_patient ON alerts(patient_id);
-CREATE INDEX idx_alerts_severity ON alerts(severity);
+CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_alerts_patient ON alerts(patient_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
 
 -- SMS LOG
 CREATE TABLE IF NOT EXISTS sms_log (
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS sms_log (
   twilio_status   TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_sms_patient ON sms_log(patient_id);
+CREATE INDEX IF NOT EXISTS idx_sms_patient ON sms_log(patient_id);
 
 -- AUDIT LOG (HIPAA)
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -139,8 +139,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip_address      TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_audit_action ON audit_log(action);
-CREATE INDEX idx_audit_time ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at);
 
 -- DASHBOARD USERS
 CREATE TABLE IF NOT EXISTS users (
@@ -180,7 +180,9 @@ CREATE OR REPLACE FUNCTION update_updated_at() RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_patients_updated ON patients;
 CREATE TRIGGER trg_patients_updated BEFORE UPDATE ON patients FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+DROP TRIGGER IF EXISTS trg_sessions_updated ON checkin_sessions;
 CREATE TRIGGER trg_sessions_updated BEFORE UPDATE ON checkin_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 `;
 
