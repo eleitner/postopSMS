@@ -1,10 +1,3 @@
-/**
- * Triage Dashboard — Nurse Alert View
- * 
- * Standalone HTML dashboard served by the Express app.
- * Shows open alerts sorted by severity, patient timeline, 
- * acknowledge/resolve workflow, and aggregate stats.
- */
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,341 +6,593 @@
   <title>PostOp SMS — Triage Dashboard</title>
   <style>
     :root {
-      --bg: #0f1117;
-      --surface: #1a1d27;
-      --surface2: #242836;
-      --border: #2e3345;
-      --text: #e4e7ec;
-      --text2: #8b8fa3;
-      --critical: #ef4444;
-      --urgent: #f59e0b;
-      --monitor: #3b82f6;
-      --low: #22c55e;
-      --accent: #6366f1;
+      --bg: #0f1117; --surface: #1a1d27; --surface2: #242836; --surface3: #2e3345;
+      --border: #363b4e; --text: #e4e7ec; --text2: #8b8fa3; --text3: #5c6070;
+      --critical: #ef4444; --urgent: #f59e0b; --monitor: #3b82f6; --low: #22c55e;
+      --accent: #6366f1; --accent2: #818cf8;
     }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
-    
-    .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
-    .header h1 { font-size: 18px; font-weight: 600; }
-    .header .subtitle { color: var(--text2); font-size: 13px; }
-    .header .badge { background: var(--critical); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; margin-left: 8px; }
-    
-    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-    
-    .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
-    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-    .stat-card .label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-    
-    .section-title { font-size: 14px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
-    
-    .alert-list { display: flex; flex-direction: column; gap: 8px; }
-    .alert-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: grid; grid-template-columns: 80px 1fr 200px; gap: 16px; align-items: start; transition: background 0.15s; }
-    .alert-card:hover { background: var(--surface2); }
-    
-    .severity-badge { padding: 4px 12px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; text-align: center; }
-    .severity-CRITICAL { background: var(--critical); color: white; }
-    .severity-URGENT { background: var(--urgent); color: #000; }
-    .severity-MONITOR { background: var(--monitor); color: white; }
-    .severity-LOW { background: var(--low); color: #000; }
-    
-    .alert-info .patient-name { font-weight: 600; font-size: 15px; }
-    .alert-info .procedure { color: var(--text2); font-size: 13px; }
-    .alert-info .reason { margin-top: 6px; font-size: 14px; line-height: 1.4; }
-    .alert-info .meta { color: var(--text2); font-size: 12px; margin-top: 4px; }
-    .alert-info .ai-summary { margin-top: 8px; padding: 8px; background: var(--surface2); border-radius: 4px; font-size: 13px; color: var(--text2); border-left: 2px solid var(--accent); }
-    
-    .alert-actions { display: flex; flex-direction: column; gap: 6px; }
-    .btn { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
-    .btn:hover { opacity: 0.85; }
-    .btn-ack { background: var(--accent); color: white; }
-    .btn-resolve { background: var(--low); color: #000; }
-    .btn-call { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-    
-    .login-form { max-width: 360px; margin: 100px auto; background: var(--surface); padding: 32px; border-radius: 12px; border: 1px solid var(--border); }
-    .login-form h2 { margin-bottom: 20px; }
-    .login-form input { width: 100%; padding: 10px 12px; margin-bottom: 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
-    .login-form .btn { width: 100%; }
-    
-    .empty-state { text-align: center; padding: 48px; color: var(--text2); }
-    .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
-    
-    .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
-    .tab { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; background: transparent; color: var(--text2); border: 1px solid transparent; }
-    .tab.active { background: var(--surface); color: var(--text); border-color: var(--border); }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    a { color: var(--accent2); text-decoration: none; }
+
+    /* Header */
+    .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .header h1 span { color: var(--text2); font-weight: 400; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-right .user { color: var(--text2); font-size: 13px; }
+    .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; font-size: 13px; transition: all .15s; }
+    .btn:hover { background: var(--surface3); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .btn-primary:hover { background: var(--accent2); }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn-danger { border-color: var(--critical); color: var(--critical); }
+
+    /* Tabs */
+    .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 24px; }
+    .tab { padding: 10px 20px; cursor: pointer; color: var(--text2); font-size: 14px; border-bottom: 2px solid transparent; transition: all .15s; }
     .tab:hover { color: var(--text); }
-    
-    .resolve-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-    .resolve-modal .modal-content { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 400px; }
-    .resolve-modal select, .resolve-modal textarea { width: 100%; padding: 8px; margin: 8px 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
-    .resolve-modal textarea { height: 80px; resize: vertical; }
+    .tab.active { color: var(--accent2); border-bottom-color: var(--accent); }
+    .tab .badge { background: var(--critical); color: white; font-size: 11px; padding: 1px 6px; border-radius: 10px; margin-left: 6px; }
+
+    /* Content */
+    .content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+    .card-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* Stats grid */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .stat-value { font-size: 28px; font-weight: 700; }
+    .stat-label { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+    /* Alert list */
+    .alert-item { background: var(--surface2); border-radius: 8px; padding: 14px 16px; margin-bottom: 8px; display: flex; align-items: flex-start; gap: 12px; border-left: 3px solid var(--low); }
+    .alert-item.CRITICAL { border-left-color: var(--critical); }
+    .alert-item.URGENT { border-left-color: var(--urgent); }
+    .alert-item.MONITOR { border-left-color: var(--monitor); }
+    .alert-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+    .alert-badge.CRITICAL { background: rgba(239,68,68,.15); color: var(--critical); }
+    .alert-badge.URGENT { background: rgba(245,158,11,.15); color: var(--urgent); }
+    .alert-badge.MONITOR { background: rgba(59,130,246,.15); color: var(--monitor); }
+    .alert-badge.LOW { background: rgba(34,197,94,.15); color: var(--low); }
+    .alert-body { flex: 1; min-width: 0; }
+    .alert-reason { font-size: 14px; margin-bottom: 4px; }
+    .alert-meta { font-size: 12px; color: var(--text2); }
+    .alert-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+    /* Patient table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; color: var(--text2); font-weight: 500; font-size: 12px; border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    tr:hover td { background: var(--surface2); }
+    tr { cursor: pointer; }
+    .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+    .status-enrolled { background: rgba(99,102,241,.15); color: var(--accent2); }
+    .status-active { background: rgba(34,197,94,.15); color: var(--low); }
+    .status-completed { background: rgba(139,143,163,.15); color: var(--text2); }
+    .status-withdrawn { background: rgba(239,68,68,.15); color: var(--critical); }
+
+    /* Journey progress dots */
+    .journey-dots { display: flex; gap: 4px; align-items: center; }
+    .jdot { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; border: 2px solid var(--border); color: var(--text3); }
+    .jdot.done { border-color: var(--low); background: rgba(34,197,94,.15); color: var(--low); }
+    .jdot.alert { border-color: var(--urgent); background: rgba(245,158,11,.15); color: var(--urgent); }
+    .jdot.current { border-color: var(--accent); background: rgba(99,102,241,.15); color: var(--accent2); }
+
+    /* Patient detail modal/panel */
+    .detail-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.6); z-index: 100; display: flex; justify-content: flex-end; }
+    .detail-panel { width: 720px; max-width: 100vw; background: var(--bg); height: 100vh; overflow-y: auto; padding: 24px; border-left: 1px solid var(--border); }
+    .detail-close { float: right; background: none; border: none; color: var(--text2); font-size: 24px; cursor: pointer; padding: 4px 8px; }
+    .detail-header { margin-bottom: 20px; }
+    .detail-header h2 { font-size: 20px; margin-bottom: 4px; }
+    .detail-header p { color: var(--text2); font-size: 14px; }
+    .detail-header .detail-tags { display: flex; gap: 8px; margin-top: 8px; }
+    .detail-header .detail-tags span { font-size: 12px; padding: 3px 10px; background: var(--surface2); border-radius: 4px; }
+
+    /* Timeline */
+    .timeline { position: relative; padding-left: 24px; }
+    .timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+    .tl-item { position: relative; margin-bottom: 16px; }
+    .tl-item::before { content: ''; position: absolute; left: -20px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface2); border: 2px solid var(--border); }
+    .tl-item.completed::before { border-color: var(--low); background: var(--low); }
+    .tl-item.active::before { border-color: var(--accent); background: var(--accent); }
+    .tl-item.alert::before { border-color: var(--urgent); background: var(--urgent); }
+    .tl-phase { font-size: 14px; font-weight: 600; }
+    .tl-detail { font-size: 13px; color: var(--text2); margin-top: 2px; }
+    .tl-ai { font-size: 13px; color: var(--accent2); margin-top: 4px; font-style: italic; }
+    .tl-responses { margin-top: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .tl-resp { font-size: 12px; color: var(--text2); padding: 3px 8px; background: var(--surface); border-radius: 4px; }
+    .tl-resp.flagged { color: var(--urgent); background: rgba(245,158,11,.08); }
+
+    /* Chart container */
+    .chart-container { background: var(--surface); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .chart-container canvas { width: 100% !important; height: 160px !important; }
+    .chart-label { font-size: 12px; color: var(--text2); margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* Export */
+    .export-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+    .export-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+    .export-card h3 { font-size: 15px; margin-bottom: 6px; }
+    .export-card p { font-size: 13px; color: var(--text2); margin-bottom: 12px; }
+
+    /* Login */
+    .login-container { max-width: 360px; margin: 80px auto; padding: 24px; }
+    .login-container h2 { margin-bottom: 24px; text-align: center; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 13px; color: var(--text2); margin-bottom: 4px; }
+    .form-group input, .form-group select { width: 100%; padding: 8px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
+    .form-group input:focus { outline: none; border-color: var(--accent); }
+    .error-msg { color: var(--critical); font-size: 13px; margin-bottom: 12px; }
+
+    /* Enroll form */
+    .enroll-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .enroll-form .full-width { grid-column: 1 / -1; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .content { padding: 12px; }
+      .tabs { overflow-x: auto; }
+      .tab { padding: 10px 14px; font-size: 13px; white-space: nowrap; }
+      .detail-panel { width: 100vw; }
+      .enroll-form { grid-template-columns: 1fr; }
+    }
+
+    .hidden { display: none !important; }
+    .loading { text-align: center; padding: 40px; color: var(--text2); }
+    .empty { text-align: center; padding: 40px; color: var(--text3); font-size: 14px; }
   </style>
 </head>
 <body>
-  <div id="app"></div>
-  
-  <script>
-    // ═══════════════════════════════════════════════════
-    // Minimal SPA — No build step required
-    // ═══════════════════════════════════════════════════
-    const API = window.location.origin + '/api';
-    let token = localStorage.getItem('postop_token');
-    let currentUser = null;
-    
-    async function api(path, opts = {}) {
-      const res = await fetch(API + path, {
-        ...opts,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(opts.headers || {}),
-        },
-        body: opts.body ? JSON.stringify(opts.body) : undefined,
-      });
-      if (res.status === 401) { token = null; localStorage.removeItem('postop_token'); render(); return null; }
-      return res.json();
+<div id="app"></div>
+
+<script>
+const API = window.location.origin + '/api';
+let token = localStorage.getItem('postop_token');
+let user = null;
+let state = {
+  tab: 'alerts',
+  alerts: [], patients: [], stats: null,
+  detailPatient: null, detailData: null,
+  alertFilter: 'open',
+  loading: false,
+};
+
+// ═══════════════ API ═══════════════
+
+async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const res = await fetch(API + path, { ...opts, headers });
+    if (res.status === 401) { logout(); return null; }
+    if (res.headers.get('content-type')?.includes('text/csv')) {
+      return { blob: await res.blob(), filename: res.headers.get('content-disposition')?.split('filename=')[1]?.replace(/"/g, '') };
     }
-    
-    // ═══════════════════════════════════════════════════
-    // STATE
-    // ═══════════════════════════════════════════════════
-    let state = {
-      view: 'alerts',     // alerts | patients | stats
-      alertFilter: 'open',
-      alerts: [],
-      patients: [],
-      stats: null,
-      resolveModal: null, // alert id being resolved
-      loading: false,
-    };
-    
-    // ═══════════════════════════════════════════════════
-    // DATA FETCHING
-    // ═══════════════════════════════════════════════════
-    async function loadAlerts() {
-      state.loading = true; render();
-      const data = await api(`/dashboard/alerts?status=${state.alertFilter}`);
-      state.alerts = data?.alerts || [];
-      state.loading = false; render();
-    }
-    
-    async function loadPatients() {
-      const data = await api('/patients?limit=100');
-      state.patients = data?.patients || []; render();
-    }
-    
-    async function loadStats() {
-      state.stats = await api('/dashboard/stats'); render();
-    }
-    
-    async function acknowledgeAlert(id) {
-      await api(`/dashboard/alerts/${id}`, { method: 'PATCH', body: { action: 'acknowledge' } });
-      loadAlerts();
-    }
-    
-    async function resolveAlert(id, note, outcome) {
-      await api(`/dashboard/alerts/${id}`, { method: 'PATCH', body: { action: 'resolve', note, callbackOutcome: outcome } });
-      state.resolveModal = null;
-      loadAlerts();
-    }
-    
-    async function login(email, password) {
-      const data = await api('/auth/login', { method: 'POST', body: { email, password } });
-      if (data?.token) {
-        token = data.token;
-        currentUser = data.user;
-        localStorage.setItem('postop_token', token);
-        loadAlerts();
-      }
-      return data;
-    }
-    
-    // ═══════════════════════════════════════════════════
-    // RENDER
-    // ═══════════════════════════════════════════════════
-    function render() {
-      const app = document.getElementById('app');
-      if (!token) { app.innerHTML = renderLogin(); return; }
-      
-      let content = '';
-      if (state.view === 'alerts') content = renderAlerts();
-      else if (state.view === 'patients') content = renderPatients();
-      else if (state.view === 'stats') content = renderStats();
-      
-      app.innerHTML = `
-        ${renderHeader()}
-        <div class="container">
-          <div class="tabs">
-            <div class="tab ${state.view === 'alerts' ? 'active' : ''}" onclick="switchView('alerts')">Alerts</div>
-            <div class="tab ${state.view === 'patients' ? 'active' : ''}" onclick="switchView('patients')">Patients</div>
-            <div class="tab ${state.view === 'stats' ? 'active' : ''}" onclick="switchView('stats')">Analytics</div>
-          </div>
-          ${content}
+    return await res.json();
+  } catch (e) { console.error('API error:', e); return null; }
+}
+
+async function loadAlerts() {
+  const data = await api('/dashboard/alerts?status=' + state.alertFilter);
+  if (data) state.alerts = data.alerts || [];
+}
+async function loadPatients() {
+  const data = await api('/dashboard/patients');
+  if (data) state.patients = data.patients || [];
+}
+async function loadStats() {
+  const data = await api('/dashboard/stats');
+  if (data) state.stats = data;
+}
+async function loadPatientDetail(id) {
+  const data = await api('/dashboard/patients/' + id);
+  if (data) { state.detailData = data; state.detailPatient = id; }
+}
+
+// ═══════════════ AUTH ═══════════════
+
+async function login(email, password) {
+  const data = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+  if (data?.token) { token = data.token; user = data.user; localStorage.setItem('postop_token', token); refresh(); }
+  return data;
+}
+function logout() { token = null; user = null; localStorage.removeItem('postop_token'); render(); }
+
+// ═══════════════ ACTIONS ═══════════════
+
+async function acknowledgeAlert(id) {
+  await api('/dashboard/alerts/' + id, { method: 'PATCH', body: JSON.stringify({ action: 'acknowledge' }) });
+  await loadAlerts(); render();
+}
+async function resolveAlert(id) {
+  const note = prompt('Resolution note (optional):');
+  const outcome = prompt('Callback outcome (no_action / reassurance / med_change / office_visit / ed_referral):') || 'no_action';
+  await api('/dashboard/alerts/' + id, { method: 'PATCH', body: JSON.stringify({ action: 'resolve', note, callbackOutcome: outcome }) });
+  await loadAlerts(); render();
+}
+async function triggerCheckin(patientId, phase) {
+  const data = await api('/dashboard/trigger', { method: 'POST', body: JSON.stringify({ patientId, phase }) });
+  if (data?.status === 'check-in started') alert('Check-in started: ' + data.phase + ' (POD ' + data.pod + ')');
+  else alert('Trigger failed: ' + JSON.stringify(data));
+}
+async function downloadExport(type) {
+  const headers = { 'Authorization': 'Bearer ' + token };
+  const res = await fetch(API + '/dashboard/export/' + type, { headers });
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = type + '_export.csv';
+  a.click();
+}
+
+// ═══════════════ REFRESH ═══════════════
+
+async function refresh() {
+  state.loading = true; render();
+  await Promise.all([loadAlerts(), loadPatients(), loadStats()]);
+  state.loading = false; render();
+}
+
+// ═══════════════ RENDER ═══════════════
+
+function render() {
+  const app = document.getElementById('app');
+  if (!token) { app.innerHTML = renderLogin(); return; }
+  const openCount = state.alerts.filter(a => a.status === 'open').length;
+  app.innerHTML = `
+    ${renderHeader()}
+    <div class="tabs">
+      <div class="tab ${state.tab === 'alerts' ? 'active' : ''}" onclick="switchTab('alerts')">Alerts${openCount ? '<span class=badge>' + openCount + '</span>' : ''}</div>
+      <div class="tab ${state.tab === 'patients' ? 'active' : ''}" onclick="switchTab('patients')">Patients</div>
+      <div class="tab ${state.tab === 'analytics' ? 'active' : ''}" onclick="switchTab('analytics')">Analytics</div>
+      <div class="tab ${state.tab === 'enroll' ? 'active' : ''}" onclick="switchTab('enroll')">Enroll</div>
+      <div class="tab ${state.tab === 'export' ? 'active' : ''}" onclick="switchTab('export')">Export</div>
+    </div>
+    <div class="content">
+      ${state.loading ? '<div class="loading">Loading...</div>' : renderTab()}
+    </div>
+    ${state.detailPatient ? renderDetailPanel() : ''}
+  `;
+}
+
+function renderHeader() {
+  return `<div class="header">
+    <h1>PostOp SMS <span>Triage Dashboard</span></h1>
+    <div class="header-right">
+      <button class="btn btn-sm" onclick="refresh()">↻ Refresh</button>
+      <span class="user">${user?.name || ''}</span>
+      <button class="btn btn-sm" onclick="logout()">Logout</button>
+    </div>
+  </div>`;
+}
+
+function renderLogin() {
+  return `<div class="login-container card">
+    <h2>PostOp SMS Login</h2>
+    <div id="login-error" class="error-msg"></div>
+    <div class="form-group"><label>Email</label><input type="email" id="login-email" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div class="form-group"><label>Password</label><input type="password" id="login-pass" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <button class="btn btn-primary" style="width:100%;padding:10px" onclick="doLogin()">Login</button>
+  </div>`;
+}
+
+function renderTab() {
+  switch (state.tab) {
+    case 'alerts': return renderAlerts();
+    case 'patients': return renderPatients();
+    case 'analytics': return renderAnalytics();
+    case 'enroll': return renderEnrollForm();
+    case 'export': return renderExport();
+    default: return '';
+  }
+}
+
+// ═══════════════ ALERTS TAB ═══════════════
+
+function renderAlerts() {
+  const filters = ['open', 'acknowledged', 'resolved', 'escalated'];
+  let html = `<div style="display:flex;gap:8px;margin-bottom:16px">
+    ${filters.map(f => `<button class="btn btn-sm ${state.alertFilter === f ? 'btn-primary' : ''}" onclick="setAlertFilter('${f}')">${f}</button>`).join('')}
+  </div>`;
+  if (state.alerts.length === 0) return html + '<div class="empty">No ' + state.alertFilter + ' alerts</div>';
+  html += state.alerts.map(a => `
+    <div class="alert-item ${a.severity}">
+      <span class="alert-badge ${a.severity}">${a.severity}</span>
+      <div class="alert-body">
+        <div class="alert-reason">${esc(a.reason)}</div>
+        <div class="alert-meta">
+          ${esc(a.procedure_name)} · Dr. ${esc(fixDr(a.surgeon_name))} · POD ${a.pod || '?'} (${a.phase || '?'})
+          · ${timeAgo(a.created_at)}
+          ${a.source === 'ai' ? ' · <span style="color:var(--accent2)">AI flagged</span>' : ''}
         </div>
-        ${state.resolveModal ? renderResolveModal() : ''}
-      `;
-    }
-    
-    function renderHeader() {
-      const openCritical = state.alerts.filter(a => a.severity === 'CRITICAL' && a.status === 'open').length;
-      const openUrgent = state.alerts.filter(a => a.severity === 'URGENT' && a.status === 'open').length;
-      return `<div class="header">
-        <div>
-          <h1>PostOp SMS Triage ${openCritical > 0 ? `<span class="badge">${openCritical} CRITICAL</span>` : ''}</h1>
-          <div class="subtitle">TidalHealth Peninsula Regional</div>
+        ${a.ai_summary ? '<div style="font-size:12px;color:var(--accent2);margin-top:4px">AI: ' + esc(a.ai_summary) + '</div>' : ''}
+        <div class="alert-meta" style="margin-top:4px">
+          <a href="#" onclick="event.preventDefault();openDetail('${a.patient_id_full}')">View patient →</a>
         </div>
-        <div style="font-size:13px;color:var(--text2)">
-          ${currentUser?.name || ''} · <a href="#" onclick="logout()" style="color:var(--accent)">Logout</a>
+      </div>
+      <div class="alert-actions">
+        ${a.status === 'open' ? '<button class="btn btn-sm" onclick="event.stopPropagation();acknowledgeAlert(\'' + a.id + '\')">Ack</button>' : ''}
+        ${a.status !== 'resolved' ? '<button class="btn btn-sm" onclick="event.stopPropagation();resolveAlert(\'' + a.id + '\')">Resolve</button>' : ''}
+      </div>
+    </div>
+  `).join('');
+  return html;
+}
+
+// ═══════════════ PATIENTS TAB ═══════════════
+
+function renderPatients() {
+  if (state.patients.length === 0) return '<div class="empty">No patients enrolled yet</div>';
+  const phases = ['pod0','acute','infectious','late','recovery','closure'];
+  const phaseLabels = ['0','A','I','L','R','C'];
+  return `<table>
+    <tr><th>Patient</th><th>Procedure</th><th>Surgeon</th><th>POD</th><th>Status</th><th>Journey</th><th>Alerts</th><th>Actions</th></tr>
+    ${state.patients.map(p => {
+      const completedArr = (p.completed_phases || '').split(',').filter(Boolean);
+      const dots = phases.map((ph, i) => {
+        const done = completedArr.includes(ph);
+        const isCurrent = parseInt(p.pod) >= ({ pod0:0, acute:1, infectious:4, late:14, recovery:21, closure:30 }[ph] || 99) && !done;
+        return `<div class="jdot ${done ? 'done' : ''} ${isCurrent ? 'current' : ''}" title="${ph}">${phaseLabels[i]}</div>`;
+      }).join('');
+      return `<tr onclick="openDetail('${p.id}')">
+        <td><strong>${esc(p.first_name)} ${esc(p.last_name)}</strong></td>
+        <td>${esc(p.procedure_name)}</td>
+        <td>Dr. ${esc(fixDr(p.surgeon_name))}</td>
+        <td>${p.pod}</td>
+        <td><span class="status-badge status-${p.status}">${p.status}</span></td>
+        <td><div class="journey-dots">${dots}</div></td>
+        <td>${parseInt(p.open_alerts) > 0 ? '<span class="alert-badge URGENT">' + p.open_alerts + '</span>' : '—'}</td>
+        <td><button class="btn btn-sm" onclick="event.stopPropagation();triggerCheckin('${p.id}')">Trigger</button></td>
+      </tr>`;
+    }).join('')}
+  </table>`;
+}
+
+// ═══════════════ ANALYTICS TAB ═══════════════
+
+function renderAnalytics() {
+  const s = state.stats;
+  if (!s) return '<div class="loading">Loading stats...</div>';
+  return `
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-value">${s.totalEnrolled || 0}</div><div class="stat-label">Total Enrolled</div></div>
+      <div class="stat-card"><div class="stat-value">${s.engagementRate || 0}%</div><div class="stat-label">Engagement Rate (≥4/6 check-ins)</div></div>
+      <div class="stat-card"><div class="stat-value">${s.alerts?.total || 0}</div><div class="stat-label">Total Alerts</div></div>
+      <div class="stat-card"><div class="stat-value">${s.alerts?.open || 0}</div><div class="stat-label">Open Alerts</div></div>
+      <div class="stat-card"><div class="stat-value">${s.aiTriage?.processed || 0}</div><div class="stat-label">AI Triage Summaries</div></div>
+      <div class="stat-card"><div class="stat-value">${s.phq2?.screened || 0}</div><div class="stat-label">PHQ-2 Screens</div></div>
+      <div class="stat-card"><div class="stat-value">${s.phq2?.positive || 0}</div><div class="stat-label">PHQ-2 Positive (≥3)</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Enrollment by Status</div>
+      ${Object.entries(s.enrollment || {}).map(([k,v]) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:14px"><span>${k}</span><strong>${v}</strong></div>`).join('')}
+    </div>
+    <div class="card">
+      <div class="card-title">Alerts by Severity</div>
+      ${Object.entries(s.alerts?.bySeverity || {}).map(([k,v]) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:14px"><span class="alert-badge ${k}">${k}</span><strong>${v}</strong></div>`).join('')}
+    </div>
+    <div class="card">
+      <div class="card-title">Phase Completion</div>
+      ${Object.entries(s.phaseCompletion || {}).map(([phase, statuses]) => {
+        const completed = statuses.completed || 0;
+        const total = Object.values(statuses).reduce((a,b) => a+b, 0);
+        return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:14px"><span>${phase}</span><span>${completed}/${total} completed</span></div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ═══════════════ ENROLL TAB ═══════════════
+
+function renderEnrollForm() {
+  return `
+    <div class="card">
+      <div class="card-title">Enroll New Patient</div>
+      <div id="enroll-msg" class="error-msg"></div>
+      <div class="enroll-form">
+        <div class="form-group"><label>First Name</label><input type="text" id="en-first"></div>
+        <div class="form-group"><label>Last Name</label><input type="text" id="en-last"></div>
+        <div class="form-group"><label>Phone (+1XXXXXXXXXX)</label><input type="tel" id="en-phone" placeholder="+1"></div>
+        <div class="form-group"><label>Surgeon Last Name</label><input type="text" id="en-surgeon"></div>
+        <div class="form-group"><label>Procedure</label><input type="text" id="en-procedure" placeholder="e.g. Lap Chole"></div>
+        <div class="form-group"><label>Surgery Date</label><input type="date" id="en-date" value="${new Date().toISOString().split('T')[0]}"></div>
+        <div class="form-group"><label>ASA Class</label><select id="en-asa"><option value="">—</option><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+        <div class="form-group"><label>Age</label><input type="number" id="en-age" min="18" max="110"></div>
+        <div class="form-group full-width"><label>Pre-Surgical Goal</label><input type="text" id="en-goal" placeholder="e.g. eat without pain and get back to gardening"></div>
+        <div class="full-width"><button class="btn btn-primary" onclick="doEnroll()">Enroll Patient</button></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="card-title">SMS Enrollment (for field use)</div>
+      <p style="font-size:13px;color:var(--text2);line-height:1.6">
+        Text the Twilio number from an authorized phone:<br>
+        <code style="color:var(--accent2)">ENROLL Margaret Thompson +13015551234 Patel Lap Chole</code><br>
+        System will confirm enrollment and schedule POD 0 check-in for 6 PM.
+      </p>
+    </div>
+  `;
+}
+
+// ═══════════════ EXPORT TAB ═══════════════
+
+function renderExport() {
+  const exports = [
+    { type: 'responses', title: 'All Responses', desc: 'Every patient response across all phases. De-identified by 8-char ID prefix.' },
+    { type: 'pain', title: 'Pain Trajectory', desc: 'Pain scores and trends by POD, procedure, and surgeon.' },
+    { type: 'opioids', title: 'Opioid Trajectory', desc: 'Opioid pill counts and cessation status by phase.' },
+    { type: 'alerts', title: 'Triage Alerts', desc: 'All alerts with severity, resolution, and callback outcomes.' },
+    { type: 'patients', title: 'Patient Summary', desc: 'Enrollment data, completion rates, alert counts.' },
+    { type: 'sessions', title: 'Check-in Sessions', desc: 'Session status, AI summaries, severity assessments.' },
+  ];
+  return `<div class="export-grid">
+    ${exports.map(e => `<div class="export-card">
+      <h3>${e.title}</h3>
+      <p>${e.desc}</p>
+      <button class="btn btn-primary" onclick="downloadExport('${e.type}')">↓ Download CSV</button>
+    </div>`).join('')}
+  </div>`;
+}
+
+// ═══════════════ DETAIL PANEL ═══════════════
+
+function renderDetailPanel() {
+  const d = state.detailData;
+  if (!d) return '<div class="detail-overlay" onclick="closeDetail()"><div class="detail-panel"><div class="loading">Loading...</div></div></div>';
+  const p = d.patient;
+  const phases = ['pod0','acute','infectious','late','recovery','closure'];
+  const phaseNames = { pod0: 'POD 0 — Evening Safety', acute: 'Acute (POD 1-3)', infectious: 'Infectious (POD 4-7)', late: 'Late (POD 14)', recovery: 'Recovery (POD 21)', closure: 'Closure (POD 30)' };
+
+  let timelineHtml = '<div class="timeline">';
+  for (const ph of phases) {
+    const session = d.sessions.find(s => s.phase === ph);
+    const resps = d.responses.filter(r => r.phase === ph);
+    const alerts = d.alerts.filter(a => a.reason && resps.some(r => r.alert_triggered));
+    const cls = session?.status === 'completed' ? 'completed' : session?.status === 'active' ? 'active' : '';
+    const hasAlert = resps.some(r => r.alert_triggered);
+
+    timelineHtml += `<div class="tl-item ${cls} ${hasAlert ? 'alert' : ''}">
+      <div class="tl-phase">${phaseNames[ph] || ph}</div>
+      ${session ? `<div class="tl-detail">${session.status === 'completed' ? 'Completed ' + fmtDate(session.completed_at) : session.status}</div>` : '<div class="tl-detail" style="color:var(--text3)">Not started</div>'}
+      ${session?.ai_summary ? `<div class="tl-ai">AI: ${esc(session.ai_summary)} [${session.ai_severity}]</div>` : ''}
+      ${resps.length > 0 ? `<div class="tl-responses">${resps.map(r => `<div class="tl-resp ${r.alert_triggered ? 'flagged' : ''}"><strong>${r.question_key}:</strong> ${esc(r.response_raw)}${r.alert_triggered ? ' ⚠' : ''}</div>`).join('')}</div>` : ''}
+    </div>`;
+  }
+  timelineHtml += '</div>';
+
+  // Pain chart data (simple text-based since no chart library)
+  const painPts = d.trajectories.pain.filter(p => p.value != null);
+  let painChart = '';
+  if (painPts.length > 0) {
+    painChart = `<div class="chart-container"><div class="chart-label">Pain Trajectory</div>
+      <div style="display:flex;align-items:flex-end;gap:16px;height:120px;padding:8px 0">
+        ${painPts.map(pt => {
+          const h = Math.max(10, (pt.value / 10) * 100);
+          const color = pt.value > 7 ? 'var(--critical)' : pt.value > 4 ? 'var(--urgent)' : 'var(--low)';
+          return `<div style="display:flex;flex-direction:column;align-items:center;flex:1">
+            <div style="font-size:12px;font-weight:700;color:${color}">${pt.value}</div>
+            <div style="width:100%;max-width:40px;height:${h}%;background:${color};border-radius:4px 4px 0 0;min-height:4px"></div>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px">POD ${pt.pod}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Opioid timeline
+  const opioidPts = d.trajectories.opioids;
+  let opioidChart = '';
+  if (opioidPts.length > 0) {
+    opioidChart = `<div class="chart-container"><div class="chart-label">Opioid Status</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        ${opioidPts.map(o => {
+          const isOff = o.value === 'no' || o.value === '0';
+          return `<div style="padding:6px 12px;border-radius:6px;font-size:13px;background:${isOff ? 'rgba(34,197,94,.12)' : 'rgba(245,158,11,.12)'};color:${isOff ? 'var(--low)' : 'var(--urgent)'}">
+            POD ${o.pod}: ${o.key === 'opioids' ? o.value + ' pills/day' : (o.value === 'yes' ? 'Still on opioids' : 'OFF opioids')}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Alerts for this patient
+  let alertsHtml = '';
+  if (d.alerts.length > 0) {
+    alertsHtml = `<div class="card"><div class="card-title">Alerts (${d.alerts.length})</div>
+      ${d.alerts.map(a => `<div class="alert-item ${a.severity}" style="margin-bottom:6px">
+        <span class="alert-badge ${a.severity}">${a.severity}</span>
+        <div class="alert-body"><div class="alert-reason">${esc(a.reason)}</div>
+        <div class="alert-meta">${a.status} · ${a.source} · ${timeAgo(a.created_at)}${a.resolution_note ? ' · ' + esc(a.resolution_note) : ''}</div></div>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  return `<div class="detail-overlay" onclick="if(event.target===this)closeDetail()">
+    <div class="detail-panel">
+      <button class="detail-close" onclick="closeDetail()">✕</button>
+      <div class="detail-header">
+        <h2>${esc(p.first_name)} ${esc(p.last_name)}</h2>
+        <p>${esc(p.procedure_name)} · Dr. ${esc(fixDr(p.surgeon_name))} · Surgery ${fmtDate(p.surgery_date)}</p>
+        <div class="detail-tags">
+          <span>POD ${p.pod}</span>
+          <span class="status-badge status-${p.status}">${p.status}</span>
+          ${p.asa_class ? '<span>ASA ' + p.asa_class + '</span>' : ''}
+          ${p.age_at_surgery ? '<span>Age ' + p.age_at_surgery + '</span>' : ''}
         </div>
-      </div>`;
-    }
-    
-    function renderLogin() {
-      return `<div class="login-form">
-        <h2>PostOp SMS Triage</h2>
-        <div class="subtitle" style="margin-bottom:20px;color:var(--text2)">TidalHealth Peninsula Regional</div>
-        <input type="email" id="login-email" placeholder="Email" />
-        <input type="password" id="login-pass" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()" />
-        <div id="login-error" style="color:var(--critical);font-size:13px;margin-bottom:8px"></div>
-        <button class="btn btn-ack" onclick="doLogin()">Sign In</button>
-      </div>`;
-    }
-    
-    function renderAlerts() {
-      const filterBtns = ['open', 'acknowledged', 'resolved'].map(s =>
-        `<div class="tab ${state.alertFilter === s ? 'active' : ''}" onclick="setAlertFilter('${s}')">${s}</div>`
-      ).join('');
-      
-      if (state.alerts.length === 0) {
-        return `<div class="tabs" style="margin-bottom:12px">${filterBtns}</div>
-          <div class="empty-state"><div class="icon">✓</div><div>No ${state.alertFilter} alerts</div></div>`;
-      }
-      
-      return `
-        <div class="tabs" style="margin-bottom:12px">${filterBtns}</div>
-        <div style="background:var(--surface2);padding:10px 14px;border-radius:6px;font-size:12px;color:var(--text2);margin-bottom:12px">
-          📱 To contact a patient, text the Twilio number: <b>TEXT &lt;id&gt; &lt;message&gt;</b> to relay a message. Text <b>CMDS</b> for full command list.
-        </div>
-        <div class="alert-list">
-          ${state.alerts.map(a => `
-            <div class="alert-card">
-              <div><span class="severity-badge severity-${a.severity}">${a.severity}</span>
-                <div style="margin-top:6px;font-size:12px;color:var(--text2)">POD ${a.pod}</div>
-              </div>
-              <div class="alert-info">
-                <div class="patient-name">${a.patient_id_short}...</div>
-                <div class="procedure">${a.procedure_name} · Dr. ${a.surgeon_name}</div>
-                <div class="reason">${a.reason}</div>
-                <div class="meta">${a.source} alert · ${new Date(a.created_at).toLocaleString()}</div>
-                ${a.ai_summary ? `<div class="ai-summary">AI: ${a.ai_summary}</div>` : ''}
-                <div style="margin-top:6px;font-size:11px;color:var(--accent);font-family:monospace">
-                  SMS: TEXT ${a.patient_id_short} &lt;msg&gt; · STATUS ${a.patient_id_short}
-                </div>
-              </div>
-              <div class="alert-actions">
-                ${a.status === 'open' ? `
-                  <button class="btn btn-ack" onclick="acknowledgeAlert('${a.id}')">Acknowledge</button>
-                  <button class="btn btn-resolve" onclick="openResolve('${a.id}')">Resolve</button>
-                ` : a.status === 'acknowledged' ? `
-                  <button class="btn btn-resolve" onclick="openResolve('${a.id}')">Resolve</button>
-                ` : `
-                  <div style="font-size:12px;color:var(--text2)">${a.callback_outcome || 'resolved'}</div>
-                `}
-              </div>
-            </div>
-          `).join('')}
-        </div>`;
-    }
-    
-    function renderPatients() {
-      if (state.patients.length === 0) return '<div class="empty-state"><div class="icon">📋</div>No patients enrolled yet</div>';
-      return `
-        <div style="background:var(--surface2);padding:10px 14px;border-radius:6px;font-size:12px;color:var(--text2);margin-bottom:12px">
-          Patient identifiers are not displayed. To contact a patient, text the Twilio number: <b>TEXT &lt;id&gt; &lt;msg&gt;</b>
-        </div>
-        <div class="alert-list">
-        ${state.patients.map(p => `
-          <div class="alert-card" style="grid-template-columns:1fr 150px 100px">
-            <div class="alert-info">
-              <div class="patient-name" style="font-family:monospace">${p.patient_id_short}...</div>
-              <div class="procedure">${p.procedure_name} · Dr. ${p.surgeon_name}</div>
-              <div class="meta">Surgery: ${new Date(p.surgery_date).toLocaleDateString()} · POD ${p.current_pod}</div>
-            </div>
-            <div><span class="severity-badge severity-${p.status === 'active' ? 'MONITOR' : p.status === 'completed' ? 'LOW' : 'URGENT'}">${p.status}</span></div>
-            <div style="font-size:13px;color:var(--text2)">POD ${p.current_pod}</div>
-          </div>
-        `).join('')}
-      </div>`;
-    }
-    
-    function renderStats() {
-      if (!state.stats) return '<div class="empty-state">Loading stats...</div>';
-      const s = state.stats;
-      return `
-        <div class="stats-row">
-          <div class="stat-card"><div class="label">Total Enrolled</div><div class="value">${s.totalEnrolled || 0}</div></div>
-          <div class="stat-card"><div class="label">Engagement Rate</div><div class="value">${s.engagementRate || 'N/A'}</div></div>
-          <div class="stat-card"><div class="label">PHQ-2 Screened</div><div class="value">${s.phq2?.screened || 0}</div></div>
-          <div class="stat-card"><div class="label">PHQ-2 Positive</div><div class="value" style="color:var(--urgent)">${s.phq2?.positive || 0} (${s.phq2?.rate || 'N/A'})</div></div>
-        </div>
-        <div class="section-title">Alert History</div>
-        <pre style="background:var(--surface);padding:16px;border-radius:8px;font-size:12px;overflow:auto">${JSON.stringify(s.alerts, null, 2)}</pre>
-        <div class="section-title" style="margin-top:20px">Opioid Status by Phase</div>
-        <pre style="background:var(--surface);padding:16px;border-radius:8px;font-size:12px;overflow:auto">${JSON.stringify(s.opioidByPhase, null, 2)}</pre>
-      `;
-    }
-    
-    function renderResolveModal() {
-      return `<div class="resolve-modal" onclick="if(event.target===this)state.resolveModal=null,render()">
-        <div class="modal-content">
-          <h3 style="margin-bottom:12px">Resolve Alert</h3>
-          <label style="font-size:13px;color:var(--text2)">Callback outcome</label>
-          <select id="resolve-outcome">
-            <option value="no_action">No action needed</option>
-            <option value="advice_given">Advice given by phone</option>
-            <option value="office_visit">Office visit scheduled</option>
-            <option value="ed_referral">ED referral</option>
-            <option value="rx_change">Prescription change</option>
-          </select>
-          <label style="font-size:13px;color:var(--text2)">Note</label>
-          <textarea id="resolve-note" placeholder="Brief note..."></textarea>
-          <div style="display:flex;gap:8px;margin-top:12px">
-            <button class="btn btn-resolve" onclick="doResolve()">Resolve</button>
-            <button class="btn btn-call" onclick="state.resolveModal=null;render()">Cancel</button>
-          </div>
-        </div>
-      </div>`;
-    }
-    
-    // ═══════════════════════════════════════════════════
-    // ACTIONS
-    // ═══════════════════════════════════════════════════
-    window.switchView = (v) => { state.view = v; render(); if (v === 'patients') loadPatients(); if (v === 'stats') loadStats(); };
-    window.setAlertFilter = (f) => { state.alertFilter = f; loadAlerts(); };
-    window.acknowledgeAlert = acknowledgeAlert;
-    window.openResolve = (id) => { state.resolveModal = id; render(); };
-    window.doResolve = () => {
-      const outcome = document.getElementById('resolve-outcome').value;
-      const note = document.getElementById('resolve-note').value;
-      resolveAlert(state.resolveModal, note, outcome);
-    };
-    window.doLogin = async () => {
-      const email = document.getElementById('login-email').value;
-      const pass = document.getElementById('login-pass').value;
-      const result = await login(email, pass);
-      if (result?.error) document.getElementById('login-error').textContent = result.error;
-    };
-    window.logout = () => { token = null; currentUser = null; localStorage.removeItem('postop_token'); render(); };
-    
-    // ═══════════════════════════════════════════════════
-    // INIT
-    // ═══════════════════════════════════════════════════
-    render();
-    if (token) loadAlerts();
-    
-    // Auto-refresh alerts every 30 seconds
-    setInterval(() => { if (token && state.view === 'alerts') loadAlerts(); }, 30000);
-  </script>
+        ${p.pre_surgical_goal ? '<p style="margin-top:8px;font-size:13px;color:var(--text2)">Goal: "' + esc(p.pre_surgical_goal) + '"</p>' : ''}
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <button class="btn btn-sm" onclick="triggerCheckin('${p.id}')">Trigger Check-in</button>
+        <button class="btn btn-sm" onclick="triggerCheckin('${p.id}','pod0')">→ POD 0</button>
+        <button class="btn btn-sm" onclick="triggerCheckin('${p.id}','acute')">→ Acute</button>
+        <button class="btn btn-sm" onclick="triggerCheckin('${p.id}','infectious')">→ Infectious</button>
+      </div>
+      ${painChart}
+      ${opioidChart}
+      <div class="card"><div class="card-title">Journey Timeline</div>${timelineHtml}</div>
+      ${alertsHtml}
+    </div>
+  </div>`;
+}
+
+// ═══════════════ ACTIONS ═══════════════
+
+window.switchTab = (tab) => { state.tab = tab; render(); };
+window.setAlertFilter = async (f) => { state.alertFilter = f; await loadAlerts(); render(); };
+window.openDetail = async (id) => { state.detailPatient = id; state.detailData = null; render(); await loadPatientDetail(id); render(); };
+window.closeDetail = () => { state.detailPatient = null; state.detailData = null; render(); };
+
+window.doLogin = async () => {
+  const email = document.getElementById('login-email').value;
+  const pass = document.getElementById('login-pass').value;
+  const result = await login(email, pass);
+  if (result?.error) document.getElementById('login-error').textContent = result.error;
+};
+
+window.doEnroll = async () => {
+  const msg = document.getElementById('enroll-msg');
+  const get = id => document.getElementById(id)?.value?.trim();
+  const firstName = get('en-first'), lastName = get('en-last'), phone = get('en-phone');
+  const surgeonName = get('en-surgeon'), procedure = get('en-procedure'), surgeryDate = get('en-date');
+  const asaClass = get('en-asa') ? parseInt(get('en-asa')) : null;
+  const age = get('en-age') ? parseInt(get('en-age')) : null;
+  const goal = get('en-goal');
+
+  if (!firstName || !lastName || !phone || !surgeonName || !procedure || !surgeryDate) {
+    msg.textContent = 'Fill in all required fields.'; return;
+  }
+
+  const data = await api('/patients', { method: 'POST', body: JSON.stringify({
+    firstName, lastName, phone, surgeonName, procedure: procedure, surgeryDate,
+    asaClass, age, preSurgicalGoal: goal
+  }) });
+  if (data?.error) { msg.textContent = data.error; return; }
+  msg.style.color = 'var(--low)';
+  msg.textContent = '✓ Enrolled: ' + firstName + ' ' + lastName + ' (ID: ' + (data.id || data.patient?.id || '').substring(0,8) + '...)';
+  await loadPatients(); render();
+};
+
+// ═══════════════ HELPERS ═══════════════
+
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fixDr(name) { return (name || '').replace(/^Dr\.?\s*/i, ''); }
+function fmtDate(d) { if (!d) return ''; try { return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); } catch { return d; } }
+function timeAgo(d) {
+  if (!d) return '';
+  const diff = Date.now() - new Date(d).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  return Math.floor(hrs / 24) + 'd ago';
+}
+
+// ═══════════════ INIT ═══════════════
+
+if (token) {
+  try { const parts = token.split('.'); user = JSON.parse(atob(parts[1])); } catch {}
+  refresh();
+} else { render(); }
+</script>
 </body>
 </html>

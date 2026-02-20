@@ -56,7 +56,8 @@ async function runScheduler() {
       if (existing.rows.length > 0) continue; // Already done or in progress
 
       // Time-of-day check
-      const hour = today.getHours();
+      // Use Eastern time — server may be UTC
+      const hour = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false, hour: 'numeric' }));
       if (pod === 0 && hour < 18) continue; // POD 0: wait until 6 PM
       if (pod > 0 && (hour < 10 || hour > 20)) continue; // Others: 10 AM - 8 PM window
 

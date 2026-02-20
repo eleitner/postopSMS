@@ -76,7 +76,7 @@ async function handleClinicianCommand(phone, body) {
   const upper = trimmed.toUpperCase();
 
   // Only intercept if it looks like a command
-  const isCommand = upper.startsWith('TEXT ') ||
+  const isCommand = upper.startsWith('TEXT ') || upper.startsWith('ENROLL ') ||
                     upper.startsWith('STATUS ') || upper === 'LIST' || upper === 'CMDS';
   if (!isCommand) return null;
 
@@ -86,6 +86,7 @@ async function handleClinicianCommand(phone, body) {
   if (upper === 'CMDS') {
     await sendSMS(phone, [
       '📋 CLINICIAN COMMANDS:',
+      'ENROLL First Last +1Phone Surgeon Procedure — Enroll patient',
       'TEXT <id> <msg> — Relay message to patient',
       'STATUS <id> — Clinical summary (no PHI)',
       'LIST — Active patients + alerts',
@@ -97,6 +98,7 @@ async function handleClinicianCommand(phone, body) {
   }
 
   if (upper === 'LIST') return await cmdList(phone);
+  if (upper.startsWith('ENROLL ')) return await cmdEnroll(phone, trimmed.substring(7).trim());
   if (upper.startsWith('TEXT ')) return await cmdText(phone, trimmed.substring(5).trim());
   if (upper.startsWith('STATUS ')) return await cmdStatus(phone, trimmed.substring(7).trim());
 
@@ -113,6 +115,87 @@ async function findPatientByIdPrefix(idFragment) {
     [idFragment.toLowerCase() + '%']
   );
   return result.rows[0] || null;
+}
+
+/**
+ * ENROLL — Register a new patient via SMS.
+ * Format: ENROLL FirstName LastName +1XXXXXXXXXX SurgeonLastName ProcedureName
+ * Example: ENROLL Margaret Thompson +13015551234 Patel Lap Chole
+ * 
+ * Minimal — no goal, no ASA, no age. Those can be added via dashboard later.
+ * The point is to make enrollment frictionless at discharge.
+ */
+async function cmdEnroll(clinicianPhone, rawArgs) {
+  // Parse: FirstName LastName +1Phone Surgeon everything-else-is-procedure
+  const parts = rawArgs.split(/\s+/);
+
+  if (parts.length < 5) {
+    await sendSMS(clinicianPhone, [
+      'Usage: ENROLL First Last +1Phone Surgeon Procedure',
+      'Example: ENROLL Margaret Thompson +13015551234 Patel Lap Chole',
+      '',
+      'Phone must be +1XXXXXXXXXX format.',
+      'Everything after surgeon name = procedure.',
+    ].join('\n'));
+    return { handled: true, type: 'clinician_enroll_usage' };
+  }
+
+  const firstName = parts[0];
+  const lastName = parts[1];
+  const phone = parts[2];
+  const surgeonName = parts[3].replace(/^Dr\.?\s*/i, '');
+  // Everything remaining is the procedure name
+  const procedure = parts.slice(4).join(' ');
+
+  // Validate phone
+  const cleanPhone = phone.replace(/[^\d+]/g, '');
+  if (!/^\+1\d{10}$/.test(cleanPhone)) {
+    await sendSMS(clinicianPhone, `Invalid phone: ${phone}. Must be +1XXXXXXXXXX (e.g., +13015551234)`);
+    return { handled: true, type: 'clinician_enroll_bad_phone' };
+  }
+
+  const crypto = require('crypto');
+  const phoneHash = crypto.createHash('sha256').update(cleanPhone).digest('hex');
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    // Check for duplicate
+    const existing = await pool.query(
+      `SELECT id FROM patients WHERE phone_hash = $1 AND status IN ('enrolled', 'active') AND surgery_date = $2`,
+      [phoneHash, today]
+    );
+    if (existing.rows.length > 0) {
+      await sendSMS(clinicianPhone, `Patient already enrolled today (${existing.rows[0].id.substring(0, 8)}...). Use STATUS ${existing.rows[0].id.substring(0, 8)} to check.`);
+      return { handled: true, type: 'clinician_enroll_duplicate' };
+    }
+
+    const result = await pool.query(
+      `INSERT INTO patients (first_name, last_name, phone, phone_hash, surgeon_name, procedure_name, surgery_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, status`,
+      [firstName, lastName, cleanPhone, phoneHash, surgeonName, procedure, today]
+    );
+
+    const patient = result.rows[0];
+    await audit('clinician:' + clinicianPhone.slice(-4), 'patient_enrolled_sms', 'patient', patient.id, {
+      procedure, surgeonName, method: 'sms_enrollment',
+    });
+
+    logger.info('Patient enrolled via SMS', { patientId: patient.id, procedure });
+
+    await sendSMS(clinicianPhone, [
+      `✓ Enrolled: ${firstName} ${lastName.charAt(0)}.`,
+      `ID: ${patient.id.substring(0, 8)}...`,
+      `${procedure} · Dr. ${surgeonName}`,
+      `POD 0 check-in sends at 6 PM today.`,
+      `To add goal: update via dashboard.`,
+    ].join('\n'));
+
+    return { handled: true, type: 'clinician_enroll' };
+  } catch (err) {
+    logger.error('SMS enrollment failed', { error: err.message });
+    await sendSMS(clinicianPhone, `Enrollment failed: ${err.message}`);
+    return { handled: true, type: 'clinician_enroll_error' };
+  }
 }
 
 /**

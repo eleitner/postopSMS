@@ -17,7 +17,9 @@ const logger = require('../utils/logger');
  * Called by the surgical team at pre-discharge (~2 min per patient)
  */
 router.post('/', authenticate, requireRole('admin', 'triage_nurse', 'resident'), async (req, res) => {
-  const { firstName, lastName, phone, surgeonName, procedure, surgeryDate, preSurgicalGoal, asaClass, age } = req.body;
+  const { firstName, lastName, phone, surgeonName: rawSurgeon, procedure, surgeryDate, preSurgicalGoal, asaClass, age } = req.body;
+  // Strip "Dr." prefix if user included it — prevents "Dr. Dr. Patel" downstream
+  const surgeonName = (rawSurgeon || '').replace(/^Dr\.?\s*/i, '').trim();
 
   // Validation
   if (!firstName || !lastName || !phone || !surgeonName || !procedure || !surgeryDate) {
