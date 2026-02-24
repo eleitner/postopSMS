@@ -22,7 +22,9 @@ const rateLimit = require('express-rate-limit');
 
 const smsRoutes = require('./routes/sms');
 const patientRoutes = require('./routes/patients');
+const surgeonRoutes = require('./routes/surgeons');
 const dashboardRoutes = require('./routes/dashboard');
+const alertRoutes = require('./routes/alerts');
 const { startScheduler } = require('./services/scheduler');
 const logger = require('./utils/logger');
 const { pool } = require('./utils/db');
@@ -72,7 +74,9 @@ const smsLimiter = rateLimit({
 
 app.use('/api/sms', smsLimiter, smsRoutes);
 app.use('/api/patients', apiLimiter, patientRoutes);
+app.use('/api', apiLimiter, surgeonRoutes);
 app.use('/api', apiLimiter, dashboardRoutes);
+app.use('/api', apiLimiter, alertRoutes);
 
 // Dashboard (static HTML)
 const path = require('path');
@@ -80,6 +84,9 @@ app.use('/dashboard', express.static(path.join(__dirname, '../dashboard')));
 app.get('/dashboard', (req, res) => {
   res.sendFile(path.join(__dirname, '../dashboard/index.html'));
 });
+
+// Public pages (consent disclosure, etc.)
+app.use(express.static(path.join(__dirname, '../public')));
 
 // Health check
 app.get('/health', async (req, res) => {

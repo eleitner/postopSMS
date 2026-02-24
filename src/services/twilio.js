@@ -89,14 +89,39 @@ async function logInbound(from, body, { patientId = null, sessionId = null, twil
  * Send a triage alert to the nurse
  */
 async function sendNurseAlert(patient, session, severity, reason) {
-  const nursePhone = process.env.TRIAGE_NURSE_PHONE;
+  // Per-surgeon triage nurse routing: check surgeon → fallback to env
+  let nursePhone = process.env.TRIAGE_NURSE_PHONE;
+  
+  try {
+    if (patient.surgeon_id) {
+      const surgeonResult = await pool.query(
+        'SELECT triage_nurse_phone, name FROM surgeons WHERE id = $1',
+        [patient.surgeon_id]
+      );
+      if (surgeonResult.rows[0]?.triage_nurse_phone) {
+        nursePhone = surgeonResult.rows[0].triage_nurse_phone;
+        logger.info('Using per-surgeon triage nurse', { surgeon: surgeonResult.rows[0].name });
+      }
+    } else if (patient.surgeon_name) {
+      // Fallback: match by name if no surgeon_id FK
+      const surgeonResult = await pool.query(
+        `SELECT triage_nurse_phone, name FROM surgeons WHERE active = TRUE AND LOWER(name) = LOWER($1)`,
+        [patient.surgeon_name]
+      );
+      if (surgeonResult.rows[0]?.triage_nurse_phone) {
+        nursePhone = surgeonResult.rows[0].triage_nurse_phone;
+      }
+    }
+  } catch (err) {
+    logger.warn('Surgeon lookup failed for alert routing, using default', { error: err.message });
+  }
+
   if (!nursePhone) {
-    logger.error('TRIAGE_NURSE_PHONE not configured — alert not sent');
+    logger.error('No triage nurse phone configured — alert not sent');
     return;
   }
 
   // NOTE: Nurse alerts DO contain patient identity — nurse needs to know who to call.
-  // This goes to the triage nurse's phone, not to any AI system.
   const surgeonClean = (patient.surgeon_name || '').replace(/^Dr\.?\s*/i, '');
   const msg = [
     `⚠️ POSTOP ALERT [${severity}]`,

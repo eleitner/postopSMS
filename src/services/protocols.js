@@ -16,11 +16,11 @@ const PROTOCOLS = {
   pod0: {
     name: 'POD 0 — Evening Safety',
     targetPOD: 0,
-    greeting: `Hi {firstName}, this is the postop care team at {facility} checking in after your surgery today with Dr. {surgeon}. We'll ask a few quick questions to make sure you're doing well tonight. Reply to each one — it only takes a minute.`,
+    greeting: `Hey {firstName}, it's your care team at {facility} checking in after your surgery with Dr. {surgeon} today. Just a few quick questions to make sure you're settling in OK tonight — takes about a minute.`,
     questions: [
       {
         key: 'pain', type: 'num',
-        q: 'How is your pain right now? Reply 0-10.',
+        q: 'How is your pain right now? Give me a number 0-10.',
         alert: (v) => v > 7 ? ['URGENT', `Pain ${v}/10 on evening of surgery`] : null,
       },
       {
@@ -30,46 +30,46 @@ const PROTOCOLS = {
       },
       {
         key: 'fluids', type: 'yn',
-        q: 'Are you able to keep fluids down? (Yes/No)',
+        q: 'Have you been able to keep fluids down? (Yes/No)',
         alert: (v) => v === 'no' ? ['URGENT', 'Unable to tolerate fluids POD 0'] : null,
       },
       {
         key: 'clearheaded', type: 'yn',
-        q: 'Are you feeling clearheaded? (Yes/No)',
+        q: 'Feeling clearheaded, or still pretty foggy? (Clear/Foggy)',
         alert: (v) => v === 'no' ? ['MONITOR', 'Not clearheaded POD 0 — possible residual sedation'] : null,
       },
       {
         key: 'urination', type: 'yn',
-        q: 'Have you been able to urinate since surgery? (Yes/No)',
+        q: 'Have you been able to pee since surgery? (Yes/No)',
         alert: (v) => v === 'no' ? ['MONITOR', 'No urination since surgery POD 0'] : null,
       },
     ],
-    closing: `Thank you! Rest well tonight. If anything concerns you, reply HELP or call the hospital. We'll check in again tomorrow.`,
+    closing: `Sounds good — rest up tonight. If anything worries you, just text us back anytime or reply HELP. We'll check in again tomorrow.`,
   },
 
   acute: {
     name: 'Acute Phase (POD 1-3)',
     targetPOD: [1, 2, 3],
-    greeting: `Hi {firstName}, POD {pod} check-in from {facility}.`,
+    greeting: `Hey {firstName}, day {pod} check-in. How are you doing today?`,
     questions: [
       {
         key: 'pain', type: 'num',
-        q: 'Rate your pain 0-10.',
+        q: 'How\'s the pain? 0-10 for me.',
         alert: (v) => v > 7 ? ['URGENT', `Pain ${v}/10 in acute phase`] : null,
       },
       {
         key: 'fluids', type: 'yn',
-        q: 'Keeping fluids down? (Yes/No)',
+        q: 'Keeping fluids down OK? (Yes/No)',
         alert: (v) => v === 'no' ? ['URGENT', 'Not tolerating fluids in acute phase'] : null,
       },
       {
         key: 'urination', type: 'yn',
-        q: 'Passed urine in last 6-8 hours? (Yes/No)',
+        q: 'Peeing normally? (Yes/No)',
         alert: (v) => v === 'no' ? ['MONITOR', 'Urinary retention concern'] : null,
       },
       {
         key: 'bleeding', type: 'yn',
-        q: 'Any bleeding through dressing? (Yes/No)',
+        q: 'Any bleeding coming through the dressing? (Yes/No)',
         alert: (v) => v === 'yes' ? ['URGENT', 'Bleeding through dressing acute phase'] : null,
       },
       {
@@ -79,30 +79,30 @@ const PROTOCOLS = {
       },
       {
         key: 'opioids', type: 'num',
-        q: 'How many pain pills today?',
+        q: 'How many pain pills have you taken today?',
       },
       {
         key: 'moving', type: 'yn',
-        q: 'Getting up and moving around? (Yes/No)',
+        q: 'Have you been getting up and moving around? (Yes/No)',
         alert: (v) => v === 'no' ? ['MONITOR', 'Not ambulating — DVT/PE risk'] : null,
       },
     ],
-    closing: `Thanks! Keep moving when you can. Reply HELP anytime if you need us.`,
+    closing: `Thanks! Keep sipping fluids and walking when you can — even short trips around the house help. Text me anytime if something comes up.`,
   },
 
   infectious: {
     name: 'Infectious Phase (POD 4-7)',
     targetPOD: [4, 5, 6, 7],
-    greeting: `Good morning {firstName}, POD {pod} check-in from {facility}.`,
+    greeting: `Good morning {firstName} — day {pod} check-in. This is the window where we keep a close eye on your incision, so a few questions about that today.`,
     questions: [
       {
         key: 'redness', type: 'yn',
-        q: 'Any spreading redness, heat, or thick discharge at your incision? (Yes/No)',
+        q: 'Take a look at your incision — any spreading redness, warmth, or thick discharge? (Yes/No)',
         alert: (v) => v === 'yes' ? ['URGENT', 'Possible SSI: redness/discharge at incision'] : null,
       },
       {
         key: 'leg_swelling', type: 'yn',
-        q: 'Is one leg significantly more swollen or painful than the other? (Yes/No)',
+        q: 'Is one leg noticeably more swollen or painful than the other? (Yes/No)',
         alert: (v) => v === 'yes' ? ['URGENT', 'Unilateral leg swelling — possible DVT'] : null,
       },
       {
@@ -112,7 +112,7 @@ const PROTOCOLS = {
       },
       {
         key: 'fever', type: 'text',
-        q: 'Any fever or chills? If yes, what is your temperature?',
+        q: 'Any fever or chills? If yes, what\'s your temperature?',
         alert: (v) => {
           const lower = (v || '').toLowerCase();
           if (lower === 'no' || lower === 'n') return null;
@@ -130,7 +130,7 @@ const PROTOCOLS = {
       },
       {
         key: 'pain_trend', type: 'text',
-        q: 'Compared to 2 days ago, is your pain: Better / Same / Worse?',
+        q: 'Compared to a couple days ago, is your pain: Better / Same / Worse?',
         alert: (v) => {
           const lower = (v || '').toLowerCase();
           if (lower.includes('worse')) return ['URGENT', 'Pain worsening in infectious window'];
@@ -139,30 +139,30 @@ const PROTOCOLS = {
       },
       {
         key: 'opioids', type: 'num',
-        q: 'How many pain pills per day now?',
+        q: 'How many pain pills per day are you taking now?',
       },
     ],
-    closing: `Thanks for checking in. If you develop a fever above 100.4°F, new redness, or increasing pain, reply HELP immediately.`,
+    closing: `Thanks for checking in. You're doing the right thing staying on top of this. If you notice a fever above 100.4, new redness, or your pain gets worse, text us right away.`,
   },
 
   late: {
     name: 'Late Phase (POD 14)',
     targetPOD: 14,
-    greeting: `Hi {firstName}, your 2-week postop check-in from {facility}.`,
+    greeting: `Hey {firstName}, it's been 2 weeks since your surgery — nice milestone! Quick check on how things are healing.`,
     questions: [
       {
         key: 'wound_open', type: 'yn',
-        q: 'Have the edges of your wound pulled apart? (Yes/No)',
+        q: 'Have the edges of your incision pulled apart at all? (Yes/No)',
         alert: (v) => v === 'yes' ? ['URGENT', 'Possible wound dehiscence at POD 14'] : null,
       },
       {
         key: 'fluid_bulge', type: 'yn',
-        q: 'Any fluid-filled bulge under the incision? (Yes/No)',
+        q: 'Any fluid-filled bulge or swelling under the incision? (Yes/No)',
         alert: (v) => v === 'yes' ? ['URGENT', 'Possible seroma/hematoma at POD 14'] : null,
       },
       {
         key: 'still_opioids', type: 'yn',
-        q: 'Still taking prescription pain meds? (Yes/No)',
+        q: 'Still taking any prescription pain meds? (Yes/No)',
         alert: (v) => v === 'yes' ? ['MONITOR', 'Still on opioids at POD 14'] : null,
       },
       {
@@ -172,20 +172,20 @@ const PROTOCOLS = {
       },
       {
         key: 'activity', type: 'text',
-        q: 'Back to walking around the house/neighborhood? (Yes/Some/Not yet)',
+        q: 'How active are you? Walking around the house, around the neighborhood, or not really yet?',
       },
     ],
-    closing: `Thanks! You're at 2 weeks — most of the hard part is behind you. We'll check in once more at 3 weeks.`,
+    closing: `Great — most of the hard part is behind you! We'll check in at 3 weeks and then one final time at 30 days. Text anytime if something comes up before then.`,
   },
 
   recovery: {
     name: 'Recovery (POD 21)',
     targetPOD: 21,
-    greeting: `Hi {firstName}, it's been 3 weeks since your surgery with Dr. {surgeon}. Quick check-in.`,
+    greeting: `Hey {firstName}, 3 weeks since your surgery with Dr. {surgeon}. Almost there — a few questions today including a quick mood check.`,
     questions: [
       {
         key: 'pain_trend', type: 'text',
-        q: 'Compared to LAST WEEK, is your pain: Better / Same / Worse?',
+        q: 'Compared to last week, how\'s the pain? Better / Same / Worse?',
         alert: (v) => {
           const lower = (v || '').toLowerCase();
           if (lower.includes('worse')) return ['URGENT', 'Pain worsening at POD 21 — unexpected trajectory'];
@@ -199,15 +199,15 @@ const PROTOCOLS = {
       },
       {
         key: 'driving', type: 'yn',
-        q: 'Are you able to drive? (Yes/No)',
+        q: 'Have you been able to drive? (Yes/No)',
       },
       {
         key: 'phq_interest', type: 'num',
-        q: 'Over the past 2 weeks, how often have you had little interest or pleasure in doing things? (0=Not at all, 1=Several days, 2=More than half, 3=Nearly every day)',
+        q: 'Over the past 2 weeks, how often have you had little interest or pleasure in doing things? 0=Not at all, 1=Several days, 2=More than half the days, 3=Nearly every day',
       },
       {
         key: 'phq_mood', type: 'num',
-        q: 'How often have you been feeling down, depressed, or hopeless? (0-3, same scale)',
+        q: 'And how often have you been feeling down, depressed, or hopeless? Same 0-3 scale.',
         alert: (v, allResponses) => {
           const interest = parseInt(allResponses.phq_interest) || 0;
           const mood = parseInt(v) || 0;
@@ -217,17 +217,17 @@ const PROTOCOLS = {
         },
       },
     ],
-    closing: `Thanks! One final check-in at 30 days, then we're done. You're doing great.`,
+    closing: `Thanks for doing that! Recovery from surgery can be tough on your mood too, so those last questions are important. One final check-in at 30 days and then we're all done. You're doing great.`,
   },
 
   closure: {
     name: 'Outcomes Closure (POD 30)',
     targetPOD: 30,
-    greeting: `Hi {firstName}, it's been a month since your {procedure} with Dr. {surgeon}. Last check-in — we'd love your feedback.`,
+    greeting: `Hey {firstName}, it's been a month since your {procedure} with Dr. {surgeon}. This is our last check-in — we'd really love to hear how you're doing.`,
     questions: [
       {
         key: 'satisfaction', type: 'text',
-        q: 'Overall, are you satisfied with your surgery results? (Very satisfied / Satisfied / Neutral / Dissatisfied / Very dissatisfied)',
+        q: 'Overall, how do you feel about your surgery results? (Very satisfied / Satisfied / Neutral / Dissatisfied / Very dissatisfied)',
       },
       {
         key: 'would_repeat', type: 'text',
@@ -235,7 +235,7 @@ const PROTOCOLS = {
       },
       {
         key: 'still_opioids', type: 'yn',
-        q: 'Still taking prescription pain medication? (Yes/No)',
+        q: 'Still taking any prescription pain medication? (Yes/No)',
         alert: (v) => v === 'yes' ? ['URGENT', 'Still on opioids at 30 days — chronic use risk'] : null,
       },
       {
@@ -246,8 +246,12 @@ const PROTOCOLS = {
         key: 'goals_met', type: 'yn',
         q: 'Before surgery you hoped for: "{goal}". Do you feel that goal has been met? (Yes/Partially/No)',
       },
+      {
+        key: 'checkin_frequency', type: 'text',
+        q: 'Last one — were these text check-ins: Too many / About right / Too few?',
+      },
     ],
-    closing: `Thank you, {firstName}. Your feedback helps us improve care at {facility}. Wishing you a full recovery!`,
+    closing: `Thank you so much, {firstName}. It's been a pleasure keeping an eye on your recovery. Your feedback helps us take better care of the next patient. Wishing you all the best from your team at {facility}!`,
   },
 };
 

@@ -9,6 +9,9 @@ const { pool, audit } = require('../utils/db');
 const { PROTOCOLS, parseResponse, isEmergency, getPhaseForPOD } = require('./protocols');
 const { sendSMS, logInbound, sendNurseAlert } = require('./twilio');
 const { triageSession } = require('./ai-triage');
+const { handleConversation } = require('./conversation-handler');
+const { selectAssessment, startMiniAssessment, processMiniAssessmentResponse, getActiveMiniAssessment } = require('./mini-assessments');
+const { getConfigForPatient } = require('./procedure-config');
 const logger = require('../utils/logger');
 
 /**
@@ -389,7 +392,7 @@ async function sendNextQuestion(patient, session) {
  * Process an inbound SMS response
  * This is the main entry point called by the webhook route.
  */
-async function processInbound(phone, body, twilioSid = null) {
+async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
   const patient = await findPatientByPhone(phone);
   
   // Log inbound regardless
@@ -447,8 +450,38 @@ async function processInbound(phone, body, twilioSid = null) {
   // Get active session
   const session = await getActiveSession(patient.id);
   if (!session) {
-    await sendSMS(phone, `Thanks for your message. We'll check in at your next scheduled time. If you need help now, reply HELP.`, { patientId: patient.id });
-    return { handled: true, type: 'no_active_session' };
+    // Check for active mini-assessment first
+    const activeMiniAssessment = await getActiveMiniAssessment(patient.id);
+    if (activeMiniAssessment) {
+      try {
+        const maResult = await processMiniAssessmentResponse(patient, activeMiniAssessment, body);
+        if (maResult.handled) {
+          // If mini-assessment complete, now send enriched alert to nurse
+          if (maResult.complete) {
+            if (maResult.criticalEscalate) {
+              await sendNurseAlert(patient, { id: null, pod: '?' }, 'CRITICAL', maResult.criticalReason);
+            } else if (maResult.nurseSummary) {
+              // Send enriched alert with mini-assessment data
+              await sendEnrichedNurseAlert(patient, activeMiniAssessment, maResult.nurseSummary);
+            }
+          }
+          return { handled: true, type: 'mini_assessment_response', ...maResult };
+        }
+      } catch (err) {
+        logger.error('Mini-assessment processing failed', { error: err.message, maId: activeMiniAssessment.id });
+        // Fall through to conversation handler
+      }
+    }
+
+    // No active check-in or mini-assessment — route to conversational AI
+    // Patient can text questions, concerns, photos anytime
+    try {
+      return await handleConversation(patient, body, { mediaUrls, twilioSid });
+    } catch (err) {
+      logger.error('Conversation handler failed', { error: err.message, patientId: patient.id });
+      await sendSMS(phone, `Thanks for reaching out! I'm passing your message along to the nurse. Someone will get back to you soon. If it's urgent, call your surgeon's office.`, { patientId: patient.id });
+      return { handled: true, type: 'conversation_error' };
+    }
   }
 
   // Process the response for the current question
@@ -492,12 +525,27 @@ async function processInbound(phone, body, twilioSid = null) {
 
   // Fire alert if triggered
   if (alertTriggered) {
-    await sendNurseAlert(patient, session, alertSeverity, alertReason);
-
     if (alertSeverity === 'CRITICAL') {
+      // CRITICAL: immediate 911 + nurse alert, no mini-assessment
+      await sendNurseAlert(patient, session, alertSeverity, alertReason);
       await sendSMS(patient.phone, '🚨 This sounds like it could be an emergency. Please call 911 or go to your nearest ER immediately.', { patientId: patient.id, sessionId: session.id });
       await pool.query(`UPDATE checkin_sessions SET status = 'completed', completed_at = NOW() WHERE id = $1`, [session.id]);
       return { handled: true, type: 'critical_alert' };
+    }
+
+    // URGENT/MONITOR: Note the alert, but defer nurse notification.
+    // Mini-assessment will run after check-in completes and THEN send enriched alert.
+    // For now, just log the alert record (nurse notification deferred).
+    try {
+      await pool.query(
+        `INSERT INTO alerts (session_id, patient_id, severity, reason, source, status)
+         VALUES ($1, $2, $3, $4, 'protocol', 'pending_assessment')`,
+        [session.id, patient.id, alertSeverity, alertReason]
+      );
+    } catch (err) {
+      logger.error('Failed to create deferred alert', { error: err.message });
+      // Fallback: send alert immediately if we can't defer
+      await sendNurseAlert(patient, session, alertSeverity, alertReason);
     }
   }
 
@@ -543,7 +591,70 @@ async function finishCheckin(patient, session) {
     [session.id]
   )).rows;
 
-  // Run AI triage (de-identified)
+  // Check for deferred alerts that need mini-assessment
+  const deferredAlerts = (await pool.query(
+    `SELECT * FROM alerts WHERE session_id = $1 AND status = 'pending_assessment' ORDER BY 
+     CASE severity WHEN 'CRITICAL' THEN 1 WHEN 'URGENT' THEN 2 WHEN 'MONITOR' THEN 3 ELSE 4 END
+     LIMIT 1`,
+    [session.id]
+  )).rows;
+
+  if (deferredAlerts.length > 0) {
+    const topAlert = deferredAlerts[0];
+    
+    // Try to start a mini-assessment for the highest-priority deferred alert
+    let miniAssessmentStarted = false;
+    try {
+      const procedureConfig = await getConfigForPatient(patient);
+      const assessmentType = selectAssessment(
+        topAlert.reason.split(':')[0]?.toLowerCase().trim() || topAlert.reason,
+        topAlert.severity,
+        session.responses || {},
+        procedureConfig
+      );
+
+      // Also try matching by question key from the alert reason
+      const alertQuestionKey = findAlertQuestionKey(topAlert.reason, allResponses);
+      const assessmentByKey = alertQuestionKey 
+        ? selectAssessment(alertQuestionKey, topAlert.severity, session.responses || {}, procedureConfig) 
+        : null;
+
+      const finalAssessmentType = assessmentType || assessmentByKey;
+
+      if (finalAssessmentType) {
+        const maSession = await startMiniAssessment(patient, session, finalAssessmentType, {
+          questionKey: alertQuestionKey || 'unknown',
+          severity: topAlert.severity,
+          reason: topAlert.reason,
+          allResponses: session.responses || {},
+        });
+
+        if (maSession) {
+          miniAssessmentStarted = true;
+          // Link alert to mini-assessment
+          await pool.query(
+            `UPDATE alerts SET mini_assessment_id = $1 WHERE id = $2`,
+            [maSession.id, topAlert.id]
+          );
+          logger.info('Mini-assessment started after check-in', { 
+            assessmentType: finalAssessmentType, alertId: topAlert.id, maId: maSession.id 
+          });
+        }
+      }
+    } catch (err) {
+      logger.error('Failed to start mini-assessment', { error: err.message });
+    }
+
+    // If no mini-assessment was started, send nurse alerts immediately (fallback)
+    if (!miniAssessmentStarted) {
+      for (const alert of deferredAlerts) {
+        await sendNurseAlert(patient, session, alert.severity, alert.reason);
+        await pool.query(`UPDATE alerts SET status = 'open', nurse_notified_at = NOW() WHERE id = $1`, [alert.id]);
+      }
+    }
+  }
+
+  // Run AI triage (de-identified) — runs regardless of mini-assessment
   try {
     const triage = await triageSession(patient, session, allResponses);
     logger.info('AI triage complete', { sessionId: session.id, severity: triage.severity });
@@ -581,6 +692,74 @@ async function finishCheckin(patient, session) {
 
   await audit('system', 'checkin_completed', 'session', session.id, { phase: session.phase, pod: session.pod });
   return { handled: true, type: 'checkin_completed' };
+}
+
+/**
+ * Send an enriched nurse alert that includes mini-assessment data.
+ * Much more useful than the raw protocol alert.
+ */
+async function sendEnrichedNurseAlert(patient, maSession, nurseSummary) {
+  const { sendNurseAlert: sendAlert } = require('./twilio');
+  const pod = patient.surgery_date
+    ? Math.floor((Date.now() - new Date(patient.surgery_date).getTime()) / 86400000)
+    : '?';
+
+  const pseudoSession = { id: maSession.checkin_session_id, pod };
+  const enrichedReason = `[AI Scribe Summary] ${nurseSummary.text}\n\nKey findings: ${(nurseSummary.keyFindings || []).join(', ')}\nSuggested: ${nurseSummary.suggestedAction || 'Nurse review'}`;
+
+  await sendAlert(patient, pseudoSession, nurseSummary.severity || maSession.trigger_severity, enrichedReason);
+
+  // Update the deferred alert to 'open' (nurse has been notified)
+  try {
+    await pool.query(
+      `UPDATE alerts SET status = 'open', nurse_notified_at = NOW() WHERE mini_assessment_id = $1 AND status = 'pending_assessment'`,
+      [maSession.id]
+    );
+  } catch (err) {
+    logger.warn('Failed to update deferred alert status', { error: err.message });
+  }
+}
+
+/**
+ * Try to extract the question key from an alert reason string.
+ * Alert reasons look like: "Pain 8/10 in acute phase" or "Possible SSI: redness/discharge"
+ */
+function findAlertQuestionKey(reason, allResponses) {
+  const lower = (reason || '').toLowerCase();
+
+  // Map common alert phrases to question keys
+  const keywordMap = {
+    'pain': 'pain',
+    'ssi': 'redness',
+    'redness': 'redness',
+    'discharge': 'redness',
+    'bleeding': 'bleeding',
+    'fluid': 'fluids',
+    'urination': 'urination',
+    'urinary': 'urination',
+    'dvt': 'leg_swelling',
+    'leg swelling': 'leg_swelling',
+    'fever': 'fever',
+    'bowel': 'bowel',
+    'opioid': 'still_opioids',
+    'dehiscence': 'wound_open',
+    'seroma': 'fluid_bulge',
+    'phq': 'phq_mood',
+    'depression': 'phq_mood',
+    'ambulating': 'moving',
+    'not moving': 'moving',
+    'wound not': 'wound_closed',
+    'confusion': 'groggy',
+    'sedation': 'groggy',
+  };
+
+  for (const [keyword, questionKey] of Object.entries(keywordMap)) {
+    if (lower.includes(keyword)) return questionKey;
+  }
+
+  // Fallback: check if any response triggered an alert and return that key
+  const alertResponse = allResponses?.find(r => r.alert_triggered);
+  return alertResponse?.question_key || null;
 }
 
 module.exports = { processInbound, startCheckin, findPatientByPhone, getActiveSession };

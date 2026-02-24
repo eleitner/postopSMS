@@ -17,7 +17,7 @@ const logger = require('../utils/logger');
  * Called by the surgical team at pre-discharge (~2 min per patient)
  */
 router.post('/', authenticate, requireRole('admin', 'triage_nurse', 'resident'), async (req, res) => {
-  const { firstName, lastName, phone, surgeonName: rawSurgeon, procedure, surgeryDate, preSurgicalGoal, asaClass, age } = req.body;
+  const { firstName, lastName, phone, surgeonName: rawSurgeon, procedure, surgeryDate, preSurgicalGoal, asaClass, age, checkinCadence } = req.body;
   // Strip "Dr." prefix if user included it — prevents "Dr. Dr. Patel" downstream
   const surgeonName = (rawSurgeon || '').replace(/^Dr\.?\s*/i, '').trim();
 
@@ -44,10 +44,25 @@ router.post('/', authenticate, requireRole('admin', 'triage_nurse', 'resident'),
       return res.status(409).json({ error: 'Patient already enrolled for this surgery date' });
     }
 
+    // Auto-link surgeon if exists in surgeons table
+    let surgeonId = null;
+    try {
+      const surgeonMatch = await pool.query(
+        `SELECT id FROM surgeons WHERE active = TRUE AND (LOWER(name) = LOWER($1) OR npi = $2) LIMIT 1`,
+        [surgeonName, req.body.surgeonNpi || '']
+      );
+      if (surgeonMatch.rows.length > 0) surgeonId = surgeonMatch.rows[0].id;
+    } catch (err) {
+      // Non-fatal: surgeon table might not exist yet on older deploys
+    }
+
+    // Validate cadence preference
+    const cadence = ['daily_light', 'standard'].includes(checkinCadence) ? checkinCadence : 'standard';
+
     const result = await pool.query(
-      `INSERT INTO patients (first_name, last_name, phone, phone_hash, surgeon_name, procedure_name, surgery_date, pre_surgical_goal, asa_class, age_at_surgery)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, status, enrolled_at`,
-      [firstName, lastName, cleanPhone, phoneHash, surgeonName, procedure, surgeryDate, preSurgicalGoal || null, asaClass || null, age || null]
+      `INSERT INTO patients (first_name, last_name, phone, phone_hash, surgeon_name, procedure_name, surgery_date, pre_surgical_goal, asa_class, age_at_surgery, surgeon_id, checkin_cadence)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id, status, enrolled_at`,
+      [firstName, lastName, cleanPhone, phoneHash, surgeonName, procedure, surgeryDate, preSurgicalGoal || null, asaClass || null, age || null, surgeonId, cadence]
     );
 
     const patient = result.rows[0];

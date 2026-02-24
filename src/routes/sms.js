@@ -29,15 +29,24 @@ function twilioAuth(req, res, next) {
  * Twilio webhook for incoming patient messages
  */
 router.post('/inbound', express.urlencoded({ extended: false }), twilioAuth, async (req, res) => {
-  const { From: from, Body: body, MessageSid: sid } = req.body;
+  const { From: from, Body: body, MessageSid: sid, NumMedia } = req.body;
 
-  if (!from || !body) {
+  // Extract MMS media URLs (Twilio sends MediaUrl0, MediaUrl1, etc.)
+  const mediaUrls = [];
+  const numMedia = parseInt(NumMedia) || 0;
+  for (let i = 0; i < numMedia; i++) {
+    const url = req.body[`MediaUrl${i}`];
+    if (url) mediaUrls.push(url);
+  }
+
+  if (!from || (!body && mediaUrls.length === 0)) {
     return res.status(400).send('<Response></Response>');
   }
 
   try {
-    const result = await processInbound(from, body, sid);
-    logger.info('Inbound processed', { from: from.slice(-4), type: result.type });
+    const messageBody = body || (mediaUrls.length > 0 ? '[Photo sent]' : '');
+    const result = await processInbound(from, messageBody, sid, mediaUrls);
+    logger.info('Inbound processed', { from: from.slice(-4), type: result.type, mediaCount: mediaUrls.length });
   } catch (err) {
     logger.error('Inbound processing error', { error: err.message, from: from.slice(-4) });
   }

@@ -16,6 +16,8 @@ const cron = require('node-cron');
 const { pool, audit } = require('../utils/db');
 const { startCheckin } = require('./session-manager');
 const { getPhaseForPOD, getScheduledPODs } = require('./protocols');
+const { expireStaleAssessments } = require('./mini-assessments');
+const { sendSMS } = require('./twilio');
 const logger = require('../utils/logger');
 
 const SCHEDULED_PODS = getScheduledPODs(); // [0, 2, 5, 14, 21, 30]
@@ -85,6 +87,42 @@ async function runScheduler() {
       for (const s of expired.rows) {
         await audit('scheduler', 'session_expired', 'session', s.id, { phase: s.phase });
       }
+    }
+
+    // Expire stale mini-assessments (active for > 30 minutes)
+    try {
+      const expiredMAs = await expireStaleAssessments();
+      if (expiredMAs > 0) {
+        logger.info(`Expired ${expiredMAs} stale mini-assessments`);
+      }
+    } catch (err) {
+      logger.warn('Failed to expire mini-assessments', { error: err.message });
+    }
+
+    // Process scheduled followups (photo requests, pain checks, temp checks)
+    try {
+      const dueFollowups = await pool.query(
+        `SELECT sf.*, p.first_name, p.phone 
+         FROM scheduled_followups sf 
+         JOIN patients p ON p.id = sf.patient_id
+         WHERE sf.status = 'pending' AND sf.trigger_at <= NOW()
+         LIMIT 20`
+      );
+
+      for (const fu of dueFollowups.rows) {
+        try {
+          await sendSMS(fu.phone, fu.prompt, { patientId: fu.patient_id });
+          await pool.query(
+            `UPDATE scheduled_followups SET status = 'sent', sent_at = NOW() WHERE id = $1`,
+            [fu.id]
+          );
+          logger.info('Scheduled followup sent', { type: fu.type, patientId: fu.patient_id });
+        } catch (sendErr) {
+          logger.error('Failed to send scheduled followup', { error: sendErr.message, fuId: fu.id });
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to process scheduled followups', { error: err.message });
     }
 
   } catch (err) {

@@ -175,6 +175,59 @@ SELECT a.severity, a.reason, a.status, a.source, a.callback_outcome,
 FROM alerts a JOIN patients p ON p.id = a.patient_id
 LEFT JOIN checkin_sessions cs ON cs.id = a.session_id;
 
+-- SURGEONS
+CREATE TABLE IF NOT EXISTS surgeons (
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name              TEXT NOT NULL,
+  npi               TEXT UNIQUE,
+  specialty         TEXT,
+  facility          TEXT DEFAULT 'TidalHealth Peninsula Regional',
+  triage_nurse_phone TEXT,
+  triage_nurse_email TEXT,
+  office_phone      TEXT,
+  office_hours      TEXT,
+  instructions      JSONB DEFAULT '{}',
+  instructions_status TEXT DEFAULT 'none',
+  instructions_source TEXT,
+  instructions_parsed_at TIMESTAMPTZ,
+  instructions_approved_by TEXT,
+  instructions_approved_at TIMESTAMPTZ,
+  surgeon_notes     TEXT,
+  active            BOOLEAN DEFAULT TRUE,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_surgeons_npi ON surgeons(npi);
+CREATE INDEX IF NOT EXISTS idx_surgeons_name ON surgeons(name);
+
+-- Add surgeon_id FK to patients (nullable for existing rows)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'patients' AND column_name = 'surgeon_id') THEN
+    ALTER TABLE patients ADD COLUMN surgeon_id UUID REFERENCES surgeons(id);
+    CREATE INDEX idx_patients_surgeon ON patients(surgeon_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'patients' AND column_name = 'checkin_cadence') THEN
+    ALTER TABLE patients ADD COLUMN checkin_cadence TEXT DEFAULT 'standard';
+  END IF;
+END $$;
+
+-- CONVERSATION LOG — between-checkin AI conversations
+CREATE TABLE IF NOT EXISTS conversation_log (
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  patient_id        UUID REFERENCES patients(id),
+  inbound_raw       TEXT,
+  inbound_scrubbed  TEXT,
+  ai_response       TEXT,
+  ai_category       TEXT,
+  escalated         BOOLEAN DEFAULT FALSE,
+  escalate_reason   TEXT,
+  redaction_count   INTEGER DEFAULT 0,
+  twilio_sid        TEXT,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_patient ON conversation_log(patient_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_escalated ON conversation_log(escalated) WHERE escalated = TRUE;
+
 -- Updated_at triggers
 CREATE OR REPLACE FUNCTION update_updated_at() RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -184,6 +237,8 @@ DROP TRIGGER IF EXISTS trg_patients_updated ON patients;
 CREATE TRIGGER trg_patients_updated BEFORE UPDATE ON patients FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 DROP TRIGGER IF EXISTS trg_sessions_updated ON checkin_sessions;
 CREATE TRIGGER trg_sessions_updated BEFORE UPDATE ON checkin_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+DROP TRIGGER IF EXISTS trg_surgeons_updated ON surgeons;
+CREATE TRIGGER trg_surgeons_updated BEFORE UPDATE ON surgeons FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 `;
 
 const DOWN = `
@@ -197,6 +252,7 @@ DROP TABLE IF EXISTS responses CASCADE;
 DROP TABLE IF EXISTS checkin_sessions CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS patients CASCADE;
+DROP TABLE IF EXISTS surgeons CASCADE;
 DROP FUNCTION IF EXISTS update_updated_at CASCADE;
 `;
 
