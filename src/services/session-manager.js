@@ -14,6 +14,258 @@ const { selectAssessment, startMiniAssessment, processMiniAssessmentResponse, ge
 const { getConfigForPatient } = require('./procedure-config');
 const logger = require('../utils/logger');
 
+// ═══════════════════════════════════════════════════
+// NURSE DISPOSITION REPLY HANDLER
+// ═══════════════════════════════════════════════════
+// When a nurse gets an alert SMS with numbered options and replies "2",
+// this routes it to the correct alert and fires the matching disposition.
+// Also handles: "NOTE <text>" to add a free-text note to the disposition.
+// Also handles: "ALERTS" to list all open alerts for the nurse.
+
+async function handleNurseDispositionReply(phone, body) {
+  // Only check authorized clinician phones
+  if (!isAuthorizedClinician(phone)) return null;
+
+  const trimmed = body.trim();
+  const upper = trimmed.toUpperCase();
+
+  // ── "ALERTS" command — list all open alerts needing disposition ──
+  if (upper === 'ALERTS') {
+    return await cmdNurseAlertsList(phone);
+  }
+
+  // ── REPLY <alert-id-prefix> <number> — explicit alert targeting ──
+  const replyMatch = upper.match(/^REPLY\s+([A-F0-9]{4,})\s+(\d+)$/i);
+  if (replyMatch) {
+    return await handleExplicitReply(phone, replyMatch[1], parseInt(replyMatch[2]), null);
+  }
+
+  // ── REPLY <alert-id-prefix> <number> NOTE <text> ──
+  const replyNoteMatch = trimmed.match(/^REPLY\s+([A-Fa-f0-9]{4,})\s+(\d+)\s+NOTE\s+(.+)$/i);
+  if (replyNoteMatch) {
+    return await handleExplicitReply(phone, replyNoteMatch[1], parseInt(replyNoteMatch[2]), replyNoteMatch[3].trim());
+  }
+
+  // ── Simple number reply (1-9) — targets most recent pending alert ──
+  const numMatch = trimmed.match(/^(\d)$/);
+  if (numMatch) {
+    return await handleQuickReply(phone, parseInt(numMatch[1]), null);
+  }
+
+  // ── Number + NOTE: "2 NOTE patient says redness improving" ──
+  const numNoteMatch = trimmed.match(/^(\d)\s+NOTE\s+(.+)$/i);
+  if (numNoteMatch) {
+    return await handleQuickReply(phone, parseInt(numNoteMatch[1]), numNoteMatch[2].trim());
+  }
+
+  // ── Just "NOTE <text>" — add note to most recent pending alert without disposition ──
+  const noteOnlyMatch = trimmed.match(/^NOTE\s+(.+)$/i);
+  if (noteOnlyMatch) {
+    return await handleNoteOnly(phone, noteOnlyMatch[1].trim());
+  }
+
+  // Not a disposition reply — fall through
+  return null;
+}
+
+/**
+ * Quick reply: nurse texts "2" → fires disposition #2 on their most recent pending alert
+ */
+async function handleQuickReply(phone, number, nurseNote) {
+  const { getNursePendingAlert, clearNursePendingAlert, sendSMS: twilioSend } = require('./twilio');
+  const { getTemplatesForAlert, sendDisposition } = require('./nurse-templates');
+
+  const pending = await getNursePendingAlert(phone);
+  if (!pending) return null; // No pending alert — fall through to other handlers
+
+  // Load patient
+  const patientResult = await pool.query('SELECT * FROM patients WHERE id = $1', [pending.patient_id]);
+  if (patientResult.rows.length === 0) {
+    await twilioSend(phone, 'Alert patient not found. Use ALERTS to see open alerts.');
+    return { handled: true, type: 'nurse_reply_error' };
+  }
+  const patient = patientResult.rows[0];
+
+  // Get templates
+  const templates = getTemplatesForAlert(inferAlertTypeForReply(pending));
+  const dispositionIndex = number - 1;
+
+  if (dispositionIndex < 0 || dispositionIndex >= templates.dispositions.length) {
+    await twilioSend(phone, `Invalid option. Reply 1-${templates.dispositions.length}:\n${templates.dispositions.map((d, i) => `${i + 1}. ${d.label}`).join('\n')}`);
+    return { handled: true, type: 'nurse_reply_invalid' };
+  }
+
+  const disposition = templates.dispositions[dispositionIndex];
+  const alert = { id: pending.alert_id, severity: pending.severity, reason: pending.reason };
+
+  // Fire the disposition — sends template message to patient
+  const result = await sendDisposition(patient, alert, templates.templateKey, disposition.key, nurseNote);
+
+  if (result?.sent) {
+    await clearNursePendingAlert(phone);
+    let confirmMsg = `✓ Sent "${disposition.label}" to ${patient.first_name} ${patient.last_name}.`;
+    if (disposition.autoFollowUp) {
+      confirmMsg += `\nAuto follow-up scheduled: ${disposition.autoFollowUp.type} in ${disposition.autoFollowUp.hours}h.`;
+    }
+    if (nurseNote) {
+      confirmMsg += `\nNote added: "${nurseNote}"`;
+    }
+    await twilioSend(phone, confirmMsg);
+    
+    logger.info('Nurse disposition via SMS', {
+      nursePhone: phone.slice(-4),
+      alertId: pending.alert_id,
+      disposition: disposition.key,
+      hasNote: !!nurseNote,
+    });
+    return { handled: true, type: 'nurse_disposition_sent', dispositionKey: disposition.key };
+  } else {
+    await twilioSend(phone, 'Failed to send disposition. Try again or use the dashboard.');
+    return { handled: true, type: 'nurse_reply_error' };
+  }
+}
+
+/**
+ * Explicit reply: nurse texts "REPLY abc123 2" → targets a specific alert by ID prefix
+ */
+async function handleExplicitReply(phone, alertIdPrefix, number, nurseNote) {
+  const { sendSMS: twilioSend, setNursePendingAlert } = require('./twilio');
+  const { getTemplatesForAlert, sendDisposition } = require('./nurse-templates');
+
+  // Find the alert
+  const alertResult = await pool.query(
+    `SELECT a.*, p.* FROM alerts a JOIN patients p ON p.id = a.patient_id 
+     WHERE a.id::text LIKE $1 AND a.status IN ('open', 'pending_assessment') LIMIT 1`,
+    [alertIdPrefix.toLowerCase() + '%']
+  );
+
+  if (alertResult.rows.length === 0) {
+    await twilioSend(phone, `No open alert found matching "${alertIdPrefix}". Reply ALERTS to see open alerts.`);
+    return { handled: true, type: 'nurse_explicit_reply_miss' };
+  }
+
+  const row = alertResult.rows[0];
+  const patient = {
+    id: row.patient_id, first_name: row.first_name, last_name: row.last_name,
+    phone: row.phone, surgeon_name: row.surgeon_name, surgeon_id: row.surgeon_id,
+    procedure_name: row.procedure_name,
+  };
+  const alert = { id: row.id, severity: row.severity, reason: row.reason };
+
+  const alertType = inferAlertTypeForReply(row);
+  const templates = getTemplatesForAlert(alertType);
+  const dispositionIndex = number - 1;
+
+  if (dispositionIndex < 0 || dispositionIndex >= templates.dispositions.length) {
+    await twilioSend(phone, `Invalid option for this alert. Reply 1-${templates.dispositions.length}:\n${templates.dispositions.map((d, i) => `${i + 1}. ${d.label}`).join('\n')}`);
+    return { handled: true, type: 'nurse_explicit_reply_invalid' };
+  }
+
+  const disposition = templates.dispositions[dispositionIndex];
+  const result = await sendDisposition(patient, alert, templates.templateKey, disposition.key, nurseNote);
+
+  if (result?.sent) {
+    let confirmMsg = `✓ Sent "${disposition.label}" to ${patient.first_name} ${patient.last_name}.`;
+    if (nurseNote) confirmMsg += `\nNote: "${nurseNote}"`;
+    await twilioSend(phone, confirmMsg);
+    
+    logger.info('Nurse explicit disposition via SMS', {
+      nursePhone: phone.slice(-4), alertId: row.id, disposition: disposition.key,
+    });
+    return { handled: true, type: 'nurse_disposition_sent', dispositionKey: disposition.key };
+  } else {
+    await twilioSend(phone, 'Failed to send disposition. Try again or use the dashboard.');
+    return { handled: true, type: 'nurse_reply_error' };
+  }
+}
+
+/**
+ * NOTE only — add a note to the pending alert without choosing a disposition
+ */
+async function handleNoteOnly(phone, noteText) {
+  const { getNursePendingAlert, sendSMS: twilioSend } = require('./twilio');
+
+  const pending = await getNursePendingAlert(phone);
+  if (!pending) return null; // No pending alert — fall through
+
+  try {
+    await pool.query(
+      `UPDATE alerts SET resolution_note = COALESCE(resolution_note, '') || $1 WHERE id = $2`,
+      [`\n[Nurse note] ${noteText}`, pending.alert_id]
+    );
+    await twilioSend(phone, `✓ Note added to alert. Reply with a number (1-5) to send a response to the patient, or ALERTS to see all open alerts.`);
+    return { handled: true, type: 'nurse_note_added' };
+  } catch (err) {
+    logger.error('Failed to add nurse note', { error: err.message });
+    return null;
+  }
+}
+
+/**
+ * ALERTS command — list all open alerts for the nurse
+ */
+async function cmdNurseAlertsList(phone) {
+  const { sendSMS: twilioSend, setNursePendingAlert } = require('./twilio');
+
+  const openAlerts = (await pool.query(`
+    SELECT a.id, a.severity, a.reason, a.created_at,
+           p.first_name, p.last_name, p.procedure_name
+    FROM alerts a 
+    JOIN patients p ON p.id = a.patient_id
+    WHERE a.status IN ('open', 'pending_assessment')
+    ORDER BY 
+      CASE a.severity WHEN 'CRITICAL' THEN 1 WHEN 'URGENT' THEN 2 WHEN 'MONITOR' THEN 3 ELSE 4 END,
+      a.created_at DESC
+    LIMIT 10
+  `)).rows;
+
+  if (openAlerts.length === 0) {
+    await twilioSend(phone, '✓ No open alerts.');
+    return { handled: true, type: 'nurse_alerts_list_empty' };
+  }
+
+  let msg = `⚠️ ${openAlerts.length} OPEN ALERT(S):\n\n`;
+  openAlerts.forEach((a, i) => {
+    const idShort = a.id.substring(0, 8);
+    const timeSince = Math.round((Date.now() - new Date(a.created_at).getTime()) / 3600000);
+    msg += `${i + 1}. [${a.severity}] ${a.first_name} ${a.last_name}\n`;
+    msg += `   ${a.procedure_name} · ${a.reason.substring(0, 60)}\n`;
+    msg += `   ${timeSince}h ago · ID: ${idShort}\n\n`;
+  });
+
+  msg += `Reply: REPLY <id> <#> to respond\nExample: REPLY ${openAlerts[0].id.substring(0, 8)} 1`;
+
+  // Set the most recent alert as the pending target for quick "1/2/3" replies
+  if (openAlerts.length > 0) {
+    const topAlert = openAlerts[0];
+    const alertType = inferAlertTypeForReply(topAlert);
+    const { getTemplatesForAlert } = require('./nurse-templates');
+    const templates = getTemplatesForAlert(alertType);
+    await setNursePendingAlert(phone, topAlert.id, templates.templateKey);
+  }
+
+  await twilioSend(phone, msg);
+  return { handled: true, type: 'nurse_alerts_list' };
+}
+
+/**
+ * Infer alert type from a pending reply or alert row for template matching
+ */
+function inferAlertTypeForReply(row) {
+  const reason = (row.reason || '').toLowerCase();
+  if (reason.includes('ssi') || reason.includes('redness') || reason.includes('discharge')) return 'redness';
+  if (reason.includes('dvt') || reason.includes('leg swell')) return 'leg_swelling';
+  if (reason.includes('pain')) return 'pain';
+  if (reason.includes('fever')) return 'fever';
+  if (reason.includes('opioid')) return 'still_opioids';
+  if (reason.includes('phq') || reason.includes('depression')) return 'phq_mood';
+  if (reason.includes('dehiscence') || reason.includes('wound_open')) return 'wound_open';
+  if (reason.includes('seroma') || reason.includes('fluid_bulge')) return 'fluid_bulge';
+  if (reason.includes('photo')) return 'photo';
+  if (reason.includes('bleeding')) return 'bleeding';
+  return 'conversation';
+}
+
 /**
  * Find a patient by phone number (hashed lookup)
  */
@@ -434,6 +686,13 @@ async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
     await sendSMS(phone, `If this is an emergency, call 911. For urgent concerns, call the hospital at your surgeon's office number. To stop these messages, reply STOP.`, { patientId: patient?.id });
     return { handled: true, type: 'help' };
   }
+
+  // ═══════════════════════════════════════════════════
+  // NURSE DISPOSITION REPLIES — "1", "2", "3", "NOTE <text>"
+  // Must check BEFORE clinician commands since these are short numeric replies
+  // ═══════════════════════════════════════════════════
+  const nurseDispoResult = await handleNurseDispositionReply(phone, body);
+  if (nurseDispoResult) return nurseDispoResult;
 
   // ═══════════════════════════════════════════════════
   // CLINICIAN COMMANDS — authorized phones only

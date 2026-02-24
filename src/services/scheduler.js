@@ -99,6 +99,19 @@ async function runScheduler() {
       logger.warn('Failed to expire mini-assessments', { error: err.message });
     }
 
+    // Clean up expired nurse pending replies (> 24 hours old)
+    try {
+      const cleaned = await pool.query(
+        `DELETE FROM nurse_pending_replies WHERE created_at < NOW() - INTERVAL '24 hours' RETURNING nurse_phone`
+      );
+      if (cleaned.rows.length > 0) {
+        logger.info(`Cleaned ${cleaned.rows.length} expired nurse pending replies`);
+      }
+    } catch (err) {
+      // Table might not exist yet — safe to ignore
+      logger.debug('Nurse pending reply cleanup skipped', { error: err.message });
+    }
+
     // Process scheduled followups (photo requests, pain checks, temp checks)
     try {
       const dueFollowups = await pool.query(
