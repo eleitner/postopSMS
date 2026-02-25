@@ -5,9 +5,25 @@
  * per procedure type. All values are surgeon-overridable via the surgeons table.
  * 
  * Evidence base:
- *   - Michigan OPEN (Howard et al., 2023, Ann Surg) — opioid duration windows
+ *   - Michigan OPEN (Opioid Prescribing Engagement Network) — discharge tab recommendations
+ *     Source: michigan-open.org/adult-opioid-prescribing-recommendations/
+ *   - Hopkins Expert Panel (Overton et al., JACS 2018) — Delphi consensus ranges
+ *   - Bree Collaborative / WA AMDG — duration-based guidance
  *   - ACS post-op guidelines — activity milestones
  *   - Clinical consensus — PT/OT expectations
+ * 
+ * MME conversion: 1 oxycodone 5mg tablet = 7.5 MME
+ *   - OPEN recommends in oxycodone 5mg tabs (the standard unit)
+ *   - Our config stores openMaxTabs for prescribing reference
+ *   - openMaxMME is auto-derived: openMaxTabs × 7.5
+ *   - expectedDurationDays = when most patients stop (based on patient-reported data)
+ *   - warningDays = soft check-in threshold (still normal for some patients)
+ *   - alertDays = flag for nurse review (approaching prolonged use territory)
+ * 
+ * CDC 2022 thresholds for context (chronic pain, not surgical):
+ *   - Reassess at ≥50 MME/day
+ *   - Careful justification at ≥90 MME/day
+ *   - Acute pain: 3 days often sufficient, rarely >7 days
  * 
  * Design:
  *   - Defaults cover ~90% of cases
@@ -254,7 +270,7 @@ const PROCEDURE_DEFAULTS = {
       expectedDurationDays: 4,
       warningDays: 7,
       alertDays: 14,
-      openMaxTabs: 15,
+      openMaxTabs: 20,             // OPEN: 0-20 oxy 5mg (0-150 MME)
     },
     activity: {
       tier1_mobilizing: { byPOD: 0, description: 'Out of bed, bathroom' },

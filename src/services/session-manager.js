@@ -624,11 +624,31 @@ async function startCheckin(patientId, phase, pod) {
 }
 
 /**
- * Send the next question in the sequence
+ * Send the next question in the sequence.
+ * Skips conditional questions that don't apply to this patient's procedure.
  */
 async function sendNextQuestion(patient, session) {
   const protocol = PROTOCOLS[session.phase];
-  const qi = session.current_question_index;
+  let qi = session.current_question_index;
+
+  // Skip conditional questions that don't apply
+  while (qi < protocol.questions.length) {
+    const q = protocol.questions[qi];
+    
+    if (q.conditional) {
+      const shouldInclude = await checkConditional(patient, q, session.responses || {});
+      if (!shouldInclude) {
+        // Skip this question — advance index
+        qi++;
+        await pool.query(
+          `UPDATE checkin_sessions SET current_question_index = $1 WHERE id = $2`,
+          [qi, session.id]
+        );
+        continue;
+      }
+    }
+    break;
+  }
 
   if (qi >= protocol.questions.length) {
     return finishCheckin(patient, session);
@@ -638,6 +658,34 @@ async function sendNextQuestion(patient, session) {
     .replace('{goal}', patient.pre_surgical_goal || 'your recovery goals');
 
   await sendSMS(patient.phone, qText, { patientId: patient.id, sessionId: session.id });
+}
+
+/**
+ * Check if a conditional question should be included for this patient.
+ */
+async function checkConditional(patient, question, currentResponses) {
+  // PT/OT conditional — only show for ortho procedures
+  if (question.conditional === 'ptOtExpected') {
+    try {
+      const { getConfigForPatient } = require('./procedure-config');
+      const config = await getConfigForPatient(patient);
+      if (!config.ptOtExpected) return false;
+
+      // Check dependent conditions (e.g., only ask pt_barriers if pt_started = 'yes')
+      if (question.conditionalDependsOn) {
+        for (const [key, expectedValue] of Object.entries(question.conditionalDependsOn)) {
+          if (currentResponses[key] !== expectedValue) return false;
+        }
+      }
+
+      return true;
+    } catch (err) {
+      logger.warn('Conditional check failed', { error: err.message });
+      return false; // Skip if we can't determine
+    }
+  }
+
+  return true; // Default: include the question
 }
 
 /**
@@ -764,6 +812,40 @@ async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
     if (alertResult) {
       alertTriggered = true;
       [alertSeverity, alertReason] = alertResult;
+    }
+  }
+
+  // ── Procedure-aware opioid alert override ──
+  // Static protocol says "opioids at POD 14 = MONITOR" regardless of procedure.
+  // A total knee at POD 14 is expected to still be on opioids. A lap chole is not.
+  // Override the severity (or suppress the alert) based on procedure-specific windows.
+  if (alertTriggered && (question.key === 'still_opioids' || question.key === 'opioids') && parsed !== 'no') {
+    try {
+      const { getConfigForPatient, checkOpioidStatus } = require('./procedure-config');
+      const procConfig = await getConfigForPatient(patient);
+      const pod = session.pod || 0;
+      const opioidStatus = checkOpioidStatus(procConfig, pod, parsed === 'yes' ? 'yes' : parsed);
+
+      if (opioidStatus === 'within') {
+        // Patient is within expected window for this procedure — suppress alert
+        alertTriggered = false;
+        alertSeverity = null;
+        alertReason = null;
+        logger.info('Opioid alert suppressed — within expected window', {
+          procedure: patient.procedure_name, pod, expected: procConfig.opioid?.expectedDurationDays,
+        });
+      } else if (opioidStatus === 'warning') {
+        // Approaching limit — downgrade to MONITOR regardless of protocol severity
+        alertSeverity = 'MONITOR';
+        alertReason = `Opioids continuing at POD ${pod} (${procConfig.displayName || patient.procedure_name}: expected ≤${procConfig.opioid?.expectedDurationDays} days, warning at ${procConfig.opioid?.warningDays} days)`;
+      } else if (opioidStatus === 'alert') {
+        // Past expected window — ensure at least URGENT
+        alertSeverity = alertSeverity === 'CRITICAL' ? 'CRITICAL' : 'URGENT';
+        alertReason = `Opioids continuing at POD ${pod} — past expected window (${procConfig.displayName || patient.procedure_name}: expected ≤${procConfig.opioid?.expectedDurationDays} days)`;
+      }
+    } catch (err) {
+      logger.warn('Procedure config check failed, using static alert', { error: err.message });
+      // Fall through with original static alert
     }
   }
 

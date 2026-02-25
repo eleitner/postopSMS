@@ -121,9 +121,14 @@ async function handleConversation(patient, rawBody, options = {}) {
   const safeContext = buildSafeContext(patient, recentResponses, surgeonInstructions);
 
   // Step 3: Call AI with scrubbed message + context
+  // If photo attached, use vision API for wound analysis
   let aiResponse;
   try {
-    aiResponse = await callAI(scrubbed, safeContext, hasMedia);
+    if (hasMedia && mediaUrls.length > 0) {
+      aiResponse = await callVisionAI(scrubbed, safeContext, mediaUrls);
+    } else {
+      aiResponse = await callAI(scrubbed, safeContext, hasMedia);
+    }
   } catch (err) {
     logger.error('Conversation AI failed — sending fallback', { error: err.message, patientId: patient.id });
     // Fallback: warm human message, always route to nurse
@@ -209,6 +214,175 @@ async function callAI(scrubbedMessage, safeContext, hasMedia) {
     escalateSeverity: 'MONITOR',
     category: 'other',
   };
+}
+
+/**
+ * Vision AI — analyze wound photos sent via MMS.
+ * 
+ * IMPORTANT: Photos from Twilio are accessed via URL. We fetch the image,
+ * encode to base64, and send to Claude's vision API.
+ * 
+ * The AI does NOT diagnose. It describes what it sees in clinical terms
+ * and recommends escalation level. The nurse makes the clinical decision.
+ */
+const VISION_SYSTEM_PROMPT = `You are a post-surgical care assistant reviewing a wound photo sent by a patient via text message.
+
+Your role is NOT to diagnose. You describe what you observe in structured clinical terms so the triage nurse can prioritize their callback.
+
+Analyze the image and respond with ONLY a JSON object:
+{
+  "message": "A warm, reassuring message to the patient acknowledging their photo and letting them know the nurse will review it. Keep it brief — 2 sentences max. Never describe what you see to the patient or suggest diagnoses.",
+  "escalate": true,
+  "escalateReason": "Structured description for the nurse: wound location, approximate size, color observations (redness, drainage color), swelling, wound edge approximation, any concerning features. Be factual and specific.",
+  "escalateSeverity": "URGENT or MONITOR",
+  "category": "wound_concern",
+  "visionFindings": {
+    "woundAppearance": "brief description",
+    "redness": "none | mild_periincisional | spreading | significant",
+    "drainage": "none | serous | serosanguinous | purulent | unknown",
+    "swelling": "none | mild | moderate | significant",
+    "woundEdges": "well_approximated | slight_separation | dehiscence | unable_to_assess",
+    "concernLevel": "low | moderate | high"
+  }
+}
+
+Guidelines:
+- ALWAYS escalate wound photos to the nurse. Set escalate: true always.
+- High concern (significant redness spreading beyond incision, purulent drainage, dehiscence, signs of infection): URGENT
+- Moderate concern (mild redness, serous drainage, mild swelling): MONITOR  
+- If the image is unclear, blurry, or not a wound photo, still escalate as MONITOR with a note
+- Never tell the patient what you see in the photo — that's the nurse's job
+- Never suggest diagnoses or treatments to the patient`;
+
+async function callVisionAI(scrubbedMessage, safeContext, mediaUrls) {
+  const anthropic = getClient();
+
+  // Fetch images from Twilio URLs and convert to base64
+  const imageContents = [];
+  for (const url of mediaUrls.slice(0, 3)) { // Max 3 images
+    try {
+      const imageData = await fetchImageAsBase64(url);
+      if (imageData) {
+        imageContents.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: imageData.mediaType,
+            data: imageData.base64,
+          },
+        });
+      }
+    } catch (err) {
+      logger.warn('Failed to fetch MMS image for vision', { url: url.substring(0, 50), error: err.message });
+    }
+  }
+
+  // If no images could be fetched, fall back to text-only
+  if (imageContents.length === 0) {
+    return callAI(scrubbedMessage, safeContext, true);
+  }
+
+  const userContent = [
+    ...imageContents,
+    {
+      type: 'text',
+      text: [
+        scrubbedMessage ? `Patient message: "${scrubbedMessage}"` : 'Patient sent a photo with no text.',
+        `\nClinical context:\n${JSON.stringify(safeContext, null, 2)}`,
+      ].join(''),
+    },
+  ];
+
+  const message = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 500,
+    system: VISION_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+  });
+
+  const responseText = message.content[0]?.text || '';
+
+  try {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        message: parsed.message || "Thanks for sending that photo! I'm passing it along to your nurse for review.",
+        escalate: true, // Always escalate photos
+        escalateReason: parsed.escalateReason || 'Patient sent wound photo — needs nurse review',
+        escalateSeverity: ['URGENT', 'MONITOR'].includes(parsed.escalateSeverity) ? parsed.escalateSeverity : 'MONITOR',
+        category: 'wound_concern',
+        visionFindings: parsed.visionFindings || null,
+      };
+    }
+  } catch (parseErr) {
+    logger.warn('Failed to parse vision AI response', { responseText: responseText.substring(0, 200) });
+  }
+
+  // Fallback — always escalate photos
+  return {
+    message: "Thanks for sending that photo! I'm passing it to your nurse right now.",
+    escalate: true,
+    escalateReason: 'Patient sent wound photo — AI analysis unavailable, needs nurse review',
+    escalateSeverity: 'MONITOR',
+    category: 'wound_concern',
+  };
+}
+
+/**
+ * Fetch an image from a Twilio MMS URL and return as base64.
+ * Twilio MMS URLs require authentication with account SID and auth token.
+ */
+async function fetchImageAsBase64(url) {
+  try {
+    const https = require('https');
+    const http = require('http');
+
+    // Twilio media URLs need basic auth
+    const authString = Buffer.from(
+      `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+    ).toString('base64');
+
+    return new Promise((resolve, reject) => {
+      const protocol = url.startsWith('https') ? https : http;
+      const req = protocol.get(url, {
+        headers: { 'Authorization': `Basic ${authString}` },
+      }, (res) => {
+        // Handle redirects (Twilio often redirects media URLs)
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          fetchImageAsBase64(res.headers.location).then(resolve).catch(reject);
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          reject(new Error(`Image fetch failed: ${res.statusCode}`));
+          return;
+        }
+
+        const contentType = res.headers['content-type'] || 'image/jpeg';
+        const chunks = [];
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          // Limit to 5MB
+          if (buffer.length > 5 * 1024 * 1024) {
+            reject(new Error('Image too large (>5MB)'));
+            return;
+          }
+          resolve({
+            base64: buffer.toString('base64'),
+            mediaType: contentType.split(';')[0].trim(),
+          });
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(10000, () => { req.destroy(); reject(new Error('Image fetch timeout')); });
+    });
+  } catch (err) {
+    logger.error('Image fetch error', { error: err.message });
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════

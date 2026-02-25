@@ -174,6 +174,27 @@ const PROTOCOLS = {
         key: 'activity', type: 'text',
         q: 'How active are you? Walking around the house, around the neighborhood, or not really yet?',
       },
+      // ── Conditional PT/OT questions (injected at runtime for ortho procedures) ──
+      {
+        key: 'pt_started', type: 'yn',
+        q: 'Have you started physical therapy yet? (Yes/No)',
+        conditional: 'ptOtExpected',
+        alert: (v, allResponses, procConfig) => {
+          if (v === 'no' && procConfig?.ptStartWindow) {
+            const pod = 14; // late phase
+            if (pod >= procConfig.ptStartWindow.startByPOD + 7) {
+              return ['MONITOR', `PT not started by POD 14 — expected to begin by POD ${procConfig.ptStartWindow.startByPOD}`];
+            }
+          }
+          return null;
+        },
+      },
+      {
+        key: 'pt_barriers', type: 'text',
+        q: 'Any trouble getting to PT or doing exercises at home? (No trouble / Transportation / Pain / Other)',
+        conditional: 'ptOtExpected',
+        conditionalDependsOn: { pt_started: 'yes' },
+      },
     ],
     closing: `Great — most of the hard part is behind you! We'll check in at 3 weeks and then one final time at 30 days. Text anytime if something comes up before then.`,
   },
@@ -200,6 +221,22 @@ const PROTOCOLS = {
       {
         key: 'driving', type: 'yn',
         q: 'Have you been able to drive? (Yes/No)',
+      },
+      // ── Conditional PT/OT questions for recovery phase ──
+      {
+        key: 'pt_progress', type: 'text',
+        q: 'How is physical therapy going? (Great / OK / Struggling / Haven\'t started)',
+        conditional: 'ptOtExpected',
+        alert: (v) => {
+          const lower = (v || '').toLowerCase();
+          if (lower.includes('haven') || lower.includes('not started') || lower.includes('no')) {
+            return ['URGENT', 'PT not started by POD 21 — significant delay for ortho recovery'];
+          }
+          if (lower.includes('struggl')) {
+            return ['MONITOR', 'Patient reporting difficulty with PT at POD 21'];
+          }
+          return null;
+        },
       },
       {
         key: 'phq_interest', type: 'num',
