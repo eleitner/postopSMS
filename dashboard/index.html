@@ -424,6 +424,7 @@ function renderExport() {
     { type: 'alerts', title: 'Triage Alerts', desc: 'All alerts with severity, resolution, and callback outcomes.' },
     { type: 'patients', title: 'Patient Summary', desc: 'Enrollment data, completion rates, alert counts.' },
     { type: 'sessions', title: 'Check-in Sessions', desc: 'Session status, AI summaries, severity assessments.' },
+    { type: 'dispositions', title: 'Nurse Dispositions', desc: 'All nurse interactions: disposition, template, notes, messages sent, follow-ups.' },
   ];
   return `<div class="export-grid">
     ${exports.map(e => `<div class="export-card">
@@ -507,6 +508,75 @@ function renderDetailPanel() {
     </div>`;
   }
 
+  // Nurse disposition history
+  let dispositionsHtml = '';
+  if (d.dispositions && d.dispositions.length > 0) {
+    dispositionsHtml = `<div class="card"><div class="card-title">Nurse Interaction Log (${d.dispositions.length})</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${d.dispositions.map(nd => {
+          const dispLabel = nd.disposition_key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          const templateLabel = nd.template_key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          return `<div style="background:var(--surface2);border-radius:8px;padding:12px 14px;border-left:3px solid var(--accent)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <div style="display:flex;gap:8px;align-items:center">
+                <span style="font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px;background:rgba(99,102,241,.15);color:var(--accent2)">${esc(dispLabel)}</span>
+                ${nd.alert_severity ? '<span class="alert-badge ' + nd.alert_severity + '">' + nd.alert_severity + '</span>' : ''}
+              </div>
+              <span style="font-size:12px;color:var(--text3)">${fmtDateTime(nd.created_at)}</span>
+            </div>
+            ${nd.alert_reason ? '<div style="font-size:13px;color:var(--text2);margin-bottom:4px">Alert: ' + esc(nd.alert_reason) + '</div>' : ''}
+            <div style="font-size:13px;color:var(--text2)">Template: ${esc(templateLabel)}</div>
+            ${nd.nurse_note ? '<div style="font-size:13px;color:var(--accent2);margin-top:4px">Note: ' + esc(nd.nurse_note) + '</div>' : ''}
+            ${nd.message_sent ? '<div style="font-size:12px;color:var(--text3);margin-top:6px;padding:8px;background:var(--surface);border-radius:6px;font-style:italic">Sent to patient: "' + esc(nd.message_sent.substring(0, 200)) + (nd.message_sent.length > 200 ? '...' : '') + '"</div>' : ''}
+            ${nd.auto_followup ? '<div style="font-size:11px;color:var(--monitor);margin-top:4px">Auto follow-up scheduled</div>' : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Escalation outcome follow-ups
+  let escalationHtml = '';
+  if (d.escalationOutcomes && d.escalationOutcomes.length > 0) {
+    escalationHtml = `<div class="card"><div class="card-title">Escalation Follow-Up Outcomes (${d.escalationOutcomes.length})</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${d.escalationOutcomes.map(eo => {
+          let meta = {};
+          try { meta = typeof eo.metadata === 'string' ? JSON.parse(eo.metadata) : (eo.metadata || {}); } catch {}
+          const responses = Array.isArray(eo.responses) ? eo.responses : (typeof eo.responses === 'string' ? JSON.parse(eo.responses) : []);
+          const outcomeLabel = (meta.outcome || eo.status || 'pending').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          const outcomeColors = {
+            resolved: 'var(--low)', stable: 'var(--low)', self_resolved: 'var(--low)',
+            went_but_worse: 'var(--critical)', did_not_go_still_symptomatic: 'var(--critical)',
+            appointment_scheduled: 'var(--monitor)',
+          };
+          const borderColor = outcomeColors[meta.outcome] || 'var(--text3)';
+          return `<div style="background:var(--surface2);border-radius:8px;padding:12px 14px;border-left:3px solid ${borderColor}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <div style="display:flex;gap:8px;align-items:center">
+                <span style="font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px;background:rgba(99,102,241,.12);color:${borderColor}">${esc(outcomeLabel)}</span>
+                <span style="font-size:12px;color:var(--text3)">${esc((meta.label || meta.dispositionKey || '').replace(/_/g, ' '))}</span>
+              </div>
+              <span style="font-size:12px;color:var(--text3)">${fmtDateTime(eo.sent_at || eo.created_at)}</span>
+            </div>
+            ${responses.length > 0 ? '<div style="margin-top:6px;display:flex;flex-direction:column;gap:4px">' + responses.map(r => {
+              const stepLabel = (r.step || '').replace(/_/g, ' ');
+              return '<div style="font-size:12px;padding:4px 8px;background:var(--surface);border-radius:4px">' +
+                '<span style="color:var(--text3)">' + esc(stepLabel) + ':</span> ' +
+                '<span style="color:var(--text)">' + esc(r.response || '') + '</span>' +
+                (r.parsed ? ' <span style="color:var(--accent2)">(' + esc(r.parsed) + ')</span>' : '') +
+                '<span style="color:var(--text3);margin-left:8px;font-size:11px">' + fmtDateTime(r.time) + '</span>' +
+              '</div>';
+            }).join('') + '</div>' : ''}
+            ${meta.whatWasDone ? '<div style="font-size:12px;color:var(--text2);margin-top:4px">Treatment: ' + esc(meta.whatWasDone) + '</div>' : ''}
+            ${meta.whyNot ? '<div style="font-size:12px;color:var(--urgent);margin-top:4px">Reason not seen: ' + esc(meta.whyNot) + '</div>' : ''}
+            ${meta.appointmentDate ? '<div style="font-size:12px;color:var(--monitor);margin-top:4px">Appointment: ' + esc(meta.appointmentDate) + '</div>' : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
   return `<div class="detail-overlay" onclick="if(event.target===this)closeDetail()">
     <div class="detail-panel">
       <button class="detail-close" onclick="closeDetail()">✕</button>
@@ -531,6 +601,8 @@ function renderDetailPanel() {
       ${opioidChart}
       <div class="card"><div class="card-title">Journey Timeline</div>${timelineHtml}</div>
       ${alertsHtml}
+      ${dispositionsHtml}
+      ${escalationHtml}
     </div>
   </div>`;
 }
@@ -577,6 +649,7 @@ window.doEnroll = async () => {
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fixDr(name) { return (name || '').replace(/^Dr\.?\s*/i, ''); }
 function fmtDate(d) { if (!d) return ''; try { return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); } catch { return d; } }
+function fmtDateTime(d) { if (!d) return ''; try { return new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }); } catch { return d; } }
 function timeAgo(d) {
   if (!d) return '';
   const diff = Date.now() - new Date(d).getTime();

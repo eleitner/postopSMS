@@ -125,11 +125,13 @@ async function runScheduler() {
       for (const fu of dueFollowups.rows) {
         try {
           await sendSMS(fu.phone, fu.prompt, { patientId: fu.patient_id });
+          // Escalation outcome follow-ups need to wait for a response
+          const newStatus = fu.type === 'escalation_outcome' ? 'awaiting_response' : 'sent';
           await pool.query(
-            `UPDATE scheduled_followups SET status = 'sent', sent_at = NOW() WHERE id = $1`,
-            [fu.id]
+            `UPDATE scheduled_followups SET status = $1, sent_at = NOW() WHERE id = $2`,
+            [newStatus, fu.id]
           );
-          logger.info('Scheduled followup sent', { type: fu.type, patientId: fu.patient_id });
+          logger.info('Scheduled followup sent', { type: fu.type, patientId: fu.patient_id, status: newStatus });
         } catch (sendErr) {
           logger.error('Failed to send scheduled followup', { error: sendErr.message, fuId: fu.id });
         }

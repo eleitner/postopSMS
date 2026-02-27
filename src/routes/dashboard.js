@@ -175,8 +175,35 @@ router.get('/dashboard/patients/:id', authenticate, async (req, res) => {
     const opioidData = responses.filter(r => ['opioids', 'still_opioids'].includes(r.question_key))
       .map(r => ({ pod: r.pod, key: r.question_key, value: r.response_parsed, phase: r.phase }));
 
+    const dispositions = (await pool.query(`
+      SELECT nd.id, nd.alert_id, nd.template_key, nd.disposition_key, nd.message_sent,
+        nd.nurse_note, nd.auto_followup, nd.created_at,
+        a.severity AS alert_severity, a.reason AS alert_reason
+      FROM nurse_dispositions nd
+      LEFT JOIN alerts a ON nd.alert_id = a.id
+      WHERE nd.patient_id = $1 ORDER BY nd.created_at DESC`, [req.params.id])).rows;
+
+    // Escalation outcome follow-ups
+    let escalationOutcomes = [];
+    try {
+      escalationOutcomes = (await pool.query(`
+        SELECT sf.id, sf.type, sf.status, sf.prompt, sf.metadata, sf.sent_at, sf.responded_at, sf.created_at,
+          COALESCE(
+            (SELECT json_agg(json_build_object(
+              'step', eor.step, 'response', eor.response_text, 'parsed', eor.parsed_value, 'time', eor.created_at
+            ) ORDER BY eor.created_at ASC)
+            FROM escalation_outcome_responses eor WHERE eor.followup_id = sf.id), '[]'
+          ) as responses
+        FROM scheduled_followups sf
+        WHERE sf.patient_id = $1 AND sf.type = 'escalation_outcome'
+        ORDER BY sf.created_at DESC`, [req.params.id])).rows;
+    } catch (err) {
+      // Table might not exist yet
+      logger.debug('Escalation outcomes query skipped', { error: err.message });
+    }
+
     await audit(req.user.email, 'patient_viewed', 'patient', req.params.id, {}, req.ip);
-    res.json({ patient, sessions, responses, alerts, trajectories: { pain: painData, opioids: opioidData } });
+    res.json({ patient, sessions, responses, alerts, dispositions, escalationOutcomes, trajectories: { pain: painData, opioids: opioidData } });
   } catch (err) {
     logger.error('Patient journey failed', { error: err.message });
     res.status(500).json({ error: 'Failed to retrieve patient journey' });
@@ -263,8 +290,9 @@ router.get('/dashboard/export/:type', authenticate, async (req, res) => {
       alerts: { q: `SELECT LEFT(a.patient_id::text, 8) as pid, p.procedure_name, a.severity, a.reason, a.source, a.status, cs.phase, cs.pod, a.callback_outcome, a.resolution_note, a.created_at, a.resolved_at FROM alerts a JOIN patients p ON p.id = a.patient_id LEFT JOIN checkin_sessions cs ON cs.id = a.session_id ORDER BY a.created_at DESC`, f: 'alerts_export.csv' },
       patients: { q: `SELECT LEFT(p.id::text, 8) as pid, p.procedure_name, p.surgeon_name, p.asa_class, p.age_at_surgery, p.surgery_date, p.status, p.pre_surgical_goal, (CURRENT_DATE - p.surgery_date) as pod, (SELECT COUNT(*) FROM checkin_sessions cs WHERE cs.patient_id = p.id AND cs.status = 'completed') as checkins, (SELECT COUNT(*) FROM alerts a WHERE a.patient_id = p.id) as alerts, p.enrolled_at FROM patients p ORDER BY p.surgery_date DESC`, f: 'patients_export.csv' },
       sessions: { q: `SELECT LEFT(cs.patient_id::text, 8) as pid, p.procedure_name, cs.phase, cs.pod, cs.status, cs.ai_summary, cs.ai_severity, cs.started_at, cs.completed_at FROM checkin_sessions cs JOIN patients p ON p.id = cs.patient_id ORDER BY cs.started_at DESC`, f: 'sessions_export.csv' },
+      dispositions: { q: `SELECT LEFT(nd.patient_id::text, 8) as pid, p.procedure_name, p.surgeon_name, a.severity as alert_severity, a.reason as alert_reason, nd.template_key, nd.disposition_key, nd.nurse_note, nd.auto_followup, nd.created_at FROM nurse_dispositions nd JOIN patients p ON p.id = nd.patient_id LEFT JOIN alerts a ON a.id = nd.alert_id ORDER BY nd.created_at DESC`, f: 'dispositions_export.csv' },
     };
-    if (!queries[type]) return res.status(400).json({ error: 'Invalid type. Options: responses, pain, opioids, alerts, patients, sessions' });
+    if (!queries[type]) return res.status(400).json({ error: 'Invalid type. Options: responses, pain, opioids, alerts, patients, sessions, dispositions' });
     rows = (await pool.query(queries[type].q)).rows;
     filename = queries[type].f;
 

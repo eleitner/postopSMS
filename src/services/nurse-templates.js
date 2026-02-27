@@ -426,6 +426,14 @@ async function sendDisposition(patient, alert, templateKey, dispositionKey, nurs
     await scheduleFollowUp(patient, disposition.autoFollowUp);
   }
 
+  // Schedule escalation outcome follow-up (48h) for care escalation dispositions
+  try {
+    const { scheduleEscalationFollowUp } = require('./escalation-followup');
+    await scheduleEscalationFollowUp(patient, alert, dispositionKey);
+  } catch (err) {
+    logger.warn('Failed to schedule escalation follow-up', { error: err.message });
+  }
+
   return { sent: true, dispositionKey, label: disposition.label };
 }
 

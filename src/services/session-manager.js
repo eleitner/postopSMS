@@ -780,7 +780,21 @@ async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
       }
     }
 
-    // No active check-in or mini-assessment — route to conversational AI
+    // No active check-in or mini-assessment — check for escalation outcome follow-up
+    try {
+      const { getActiveEscalationFollowUp, processEscalationResponse } = require('./escalation-followup');
+      const activeEscFollowUp = await getActiveEscalationFollowUp(patient.id);
+      if (activeEscFollowUp) {
+        const escResult = await processEscalationResponse(patient, activeEscFollowUp, body);
+        if (escResult.handled) {
+          return { handled: true, type: 'escalation_outcome_response', ...escResult };
+        }
+      }
+    } catch (err) {
+      logger.debug('Escalation follow-up check failed', { error: err.message });
+    }
+
+    // No active check-in, mini-assessment, or escalation follow-up — route to conversational AI
     // Patient can text questions, concerns, photos anytime
     try {
       return await handleConversation(patient, body, { mediaUrls, twilioSid });
