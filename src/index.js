@@ -32,6 +32,9 @@ const { pool } = require('./utils/db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust Render's proxy (fixes express-rate-limit X-Forwarded-For warning)
+app.set('trust proxy', 1);
+
 // ═══════════════════════════════════════════════════
 // MIDDLEWARE
 // ═══════════════════════════════════════════════════

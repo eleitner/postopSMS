@@ -11,6 +11,7 @@ const { sendSMS, logInbound, sendNurseAlert } = require('./twilio');
 const { triageSession } = require('./ai-triage');
 const { handleConversation } = require('./conversation-handler');
 const { selectAssessment, startMiniAssessment, processMiniAssessmentResponse, getActiveMiniAssessment } = require('./mini-assessments');
+const { isSelfEnrollmentTrigger, hasActiveEnrollmentSession, handleSelfEnrollment } = require('./self-enrollment');
 const { getConfigForPatient } = require('./procedure-config');
 const logger = require('../utils/logger');
 
@@ -747,6 +748,20 @@ async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
   // ═══════════════════════════════════════════════════
   const clinicianResult = await handleClinicianCommand(phone, body);
   if (clinicianResult) return clinicianResult;
+
+  // ═══════════════════════════════════════════════════
+  // PATIENT SELF-ENROLLMENT — JOIN, START, SIGNUP
+  // Must check BEFORE unknown patient fallback
+  // Also catches in-progress enrollment conversations
+  // ═══════════════════════════════════════════════════
+  if (!patient && (isSelfEnrollmentTrigger(body) || hasActiveEnrollmentSession(phone))) {
+    try {
+      const enrollResult = await handleSelfEnrollment(phone, body);
+      if (enrollResult.handled) return enrollResult;
+    } catch (err) {
+      logger.error('Self-enrollment failed', { error: err.message });
+    }
+  }
 
   // No known patient
   if (!patient) {
