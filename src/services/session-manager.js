@@ -11,8 +11,9 @@ const { sendSMS, logInbound, sendNurseAlert } = require('./twilio');
 const { triageSession } = require('./ai-triage');
 const { handleConversation } = require('./conversation-handler');
 const { selectAssessment, startMiniAssessment, processMiniAssessmentResponse, getActiveMiniAssessment } = require('./mini-assessments');
-const { isSelfEnrollmentTrigger, hasActiveEnrollmentSession, handleSelfEnrollment } = require('./self-enrollment');
 const { getConfigForPatient } = require('./procedure-config');
+const { isSelfEnrollmentTrigger, hasActiveEnrollmentSession, handleSelfEnrollment } = require('./self-enrollment');
+const { getPriorResponses, buildGreeting, personalizeQuestion, buildClosing } = require('./empathic-greetings');
 const logger = require('../utils/logger');
 
 // ═══════════════════════════════════════════════════
@@ -604,14 +605,11 @@ async function startCheckin(patientId, phase, pod) {
   // Update patient status
   await pool.query(`UPDATE patients SET status = 'active' WHERE id = $1`, [patientId]);
 
-  // Build and send greeting
-  const surgeonClean = (patient.surgeon_name || '').replace(/^Dr\.?\s*/i, '');
-  const greeting = protocol.greeting
-    .replace('{firstName}', patient.first_name)
-    .replace('{pod}', pod)
-    .replace('{surgeon}', surgeonClean)
-    .replace('{procedure}', patient.procedure_name)
-    .replace('{facility}', process.env.FACILITY_NAME || 'TidalHealth Peninsula Regional');
+  // Fetch prior responses for personalization
+  const prior = await getPriorResponses(patientId);
+
+  // Build personalized greeting
+  const greeting = buildGreeting(phase, patient, prior, pod);
 
   await sendSMS(patient.phone, greeting, { patientId, sessionId: session.id });
 
@@ -657,6 +655,14 @@ async function sendNextQuestion(patient, session) {
 
   let qText = protocol.questions[qi].q
     .replace('{goal}', patient.pre_surgical_goal || 'your recovery goals');
+
+  // Personalize question text based on prior responses
+  try {
+    const prior = await getPriorResponses(patient.id);
+    qText = personalizeQuestion(protocol.questions[qi].key, qText, session.phase, prior);
+  } catch (err) {
+    // Fall through with original text if personalization fails
+  }
 
   await sendSMS(patient.phone, qText, { patientId: patient.id, sessionId: session.id });
 }
@@ -751,8 +757,6 @@ async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
 
   // ═══════════════════════════════════════════════════
   // PATIENT SELF-ENROLLMENT — JOIN, START, SIGNUP
-  // Must check BEFORE unknown patient fallback
-  // Also catches in-progress enrollment conversations
   // ═══════════════════════════════════════════════════
   if (!patient && (isSelfEnrollmentTrigger(body) || hasActiveEnrollmentSession(phone))) {
     try {
@@ -940,12 +944,18 @@ async function processInbound(phone, body, twilioSid = null, mediaUrls = []) {
 async function finishCheckin(patient, session) {
   const protocol = PROTOCOLS[session.phase];
 
-  // Send closing message
-  const surgeonClean = (patient.surgeon_name || '').replace(/^Dr\.?\s*/i, '');
-  const closing = (protocol.closing || 'Thanks for checking in!')
-    .replace('{firstName}', patient.first_name)
-    .replace('{surgeon}', surgeonClean)
-    .replace('{facility}', process.env.FACILITY_NAME || 'TidalHealth Peninsula Regional');
+  // Send personalized closing message
+  let closing;
+  try {
+    const prior = await getPriorResponses(patient.id);
+    closing = buildClosing(session.phase, patient, prior);
+  } catch (err) {
+    const surgeonClean = (patient.surgeon_name || '').replace(/^Dr\.?\s*/i, '');
+    closing = (protocol.closing || 'Thanks for checking in!')
+      .replace('{firstName}', patient.first_name)
+      .replace('{surgeon}', surgeonClean)
+      .replace('{facility}', process.env.FACILITY_NAME || 'TidalHealth Peninsula Regional');
+  }
 
   await sendSMS(patient.phone, closing, { patientId: patient.id, sessionId: session.id });
 
