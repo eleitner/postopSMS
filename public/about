@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>About SurgHome — Post-Surgical Recovery Monitoring</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0f172a;
+      --text: #334155;
+      --muted: #64748b;
+      --faint: #94a3b8;
+      --border: #e2e8f0;
+      --surface: #f8fafc;
+      --white: #ffffff;
+      --blue: #0284c7;
+      --blue-light: #e0f2fe;
+      --blue-deep: #0c4a6e;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      color: var(--text);
+      line-height: 1.75;
+      background: var(--white);
+      -webkit-font-smoothing: antialiased;
+    }
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 0;
+    }
+    .nav-inner {
+      max-width: 960px; margin: 0 auto; padding: 0 24px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .logo {
+      font-family: 'Source Serif 4', serif; font-weight: 700;
+      font-size: 1.3rem; color: var(--ink); text-decoration: none;
+    }
+    .logo span { color: var(--blue); }
+    .nav-links a {
+      font-size: 0.875rem; color: var(--muted); text-decoration: none;
+      margin-left: 28px; transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--blue); }
+    .container { max-width: 760px; margin: 0 auto; padding: 120px 24px 80px; }
+    h1 {
+      font-family: 'Source Serif 4', serif; font-size: 2.25rem;
+      font-weight: 700; color: var(--ink); line-height: 1.25;
+      margin-bottom: 16px; letter-spacing: -0.02em;
+    }
+    h2 {
+      font-family: 'Source Serif 4', serif; font-size: 1.4rem;
+      font-weight: 600; color: var(--ink); margin-top: 48px; margin-bottom: 12px;
+    }
+    p { margin-bottom: 18px; font-size: 1rem; color: var(--text); }
+    .subtitle {
+      font-size: 1.1rem; color: var(--muted); margin-bottom: 40px;
+      line-height: 1.7;
+    }
+    .card-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+      margin: 32px 0;
+    }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 24px;
+    }
+    .card h3 {
+      font-size: 1rem; font-weight: 600; color: var(--ink); margin-bottom: 8px;
+    }
+    .card p { font-size: 0.9rem; color: var(--muted); margin-bottom: 0; }
+    .highlight-box {
+      background: var(--blue-light); border-radius: 12px;
+      padding: 24px 28px; margin: 32px 0;
+    }
+    .highlight-box p { color: var(--blue-deep); margin-bottom: 0; }
+    footer {
+      border-top: 1px solid var(--border); padding: 32px 24px;
+      text-align: center; margin-top: 48px;
+    }
+    footer p { font-size: 0.8rem; color: var(--faint); }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--blue); }
+    @media (max-width: 640px) {
+      .card-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 1.75rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="nav-inner">
+      <a href="/" class="logo">Surg<span>Home</span></a>
+      <div class="nav-links">
+        <a href="/">Home</a>
+        <a href="/about.html">About</a>
+        <a href="/privacy.html">Privacy</a>
+        <a href="/terms.html">Terms</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container">
+
+```
+<h1>About SurgHome</h1>
+<p class="subtitle">SurgHome is a post-surgical recovery monitoring service that keeps patients connected to their care team during the critical 30 days after surgery — using nothing more than text messages.</p>
+
+<h2>The Problem We Solve</h2>
+<p>After surgery, patients go home and typically don't see their care team again for 1-2 weeks. During that window, complications like surgical site infections, blood clots, prolonged opioid use, and wound issues can develop silently. Most patients don't have a structured way to report concerns — they either call the office, drive to the ER, or tough it out.</p>
+<p>SurgHome fills that gap with automated, clinically timed text message check-ins that screen for complications, track recovery milestones, and alert the care team when something needs attention.</p>
+
+<h2>How It Works</h2>
+<p>Patients enroll by providing verbal consent before discharge or by texting JOIN to the SurgHome number. Over the next 30 days, they receive 6 brief check-ins at clinically meaningful timepoints — the evening of surgery, during the acute recovery phase, the infectious window, and at 2-week, 3-week, and 30-day milestones.</p>
+<p>Each check-in takes about a minute. Patients answer short questions about pain, wound healing, medication use, mobility, and mood. If responses suggest a concern, the care team is alerted immediately with a clinical summary. If everything looks good, the patient gets a reassuring message and the system moves on.</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>No App Required</h3>
+    <p>Works on any phone that can send and receive text messages. No downloads, no accounts, no passwords.</p>
+  </div>
+  <div class="card">
+    <h3>Clinically Designed</h3>
+    <p>Screening questions are timed to the pathophysiology of post-surgical recovery. Each phase screens for the complications most likely to present at that timepoint.</p>
+  </div>
+  <div class="card">
+    <h3>Smart Triage</h3>
+    <p>An AI triage layer reviews responses and categorizes concerns by severity — routing urgent issues to the care team within hours, not days.</p>
+  </div>
+  <div class="card">
+    <h3>Patient-Centered</h3>
+    <p>Personalized greetings reference prior responses and recovery goals. The system remembers what you said last time and follows up on unresolved concerns.</p>
+  </div>
+</div>
+
+<h2>Who We Are</h2>
+<p>SurgHome is built and operated by Heirloom Data, Inc., a healthcare technology company focused on improving post-surgical care through structured patient engagement. The platform was designed by physicians with direct experience in perioperative medicine and community hospital surgery.</p>
+<p>Our mission is simple: give surgical patients a voice during the recovery period when they're most vulnerable and least visible to their care team.</p>
+
+<h2>Our Service</h2>
+<p>SurgHome is provided as a direct service to patients. We send automated text message notifications to patients who have opted in, checking on their recovery and connecting them with their care team when concerns arise. Messages are sent from a dedicated SurgHome phone number. We are not an intermediary — we provide the service directly to patients enrolled in the program.</p>
+
+<div class="highlight-box">
+  <p><strong>For patients:</strong> SurgHome is free. Standard message and data rates from your mobile carrier may apply. You can opt out at any time by replying STOP to any message. Reply HELP for assistance.</p>
+</div>
+
+<h2>Data and Privacy</h2>
+<p>Patient privacy is foundational to everything we build. SurgHome is designed to comply with HIPAA. Patient data is encrypted in transit and at rest. Phone numbers are stored as cryptographic hashes. We never sell patient data. For complete details, see our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</p>
+
+<h2>Contact</h2>
+<p>For questions about SurgHome, contact us at <a href="mailto:hello@surghome.com">hello@surghome.com</a>.</p>
+<p>Heirloom Data, Inc.<br>Registered in Delaware</p>
+```
+
+  </div>
+
+  <footer>
+    <p>&copy; 2026 Heirloom Data, Inc. &middot; <a href="/about.html">About</a> &middot; <a href="/privacy.html">Privacy Policy</a> &middot; <a href="/terms.html">Terms of Service</a> &middot; <a href="/consent.html">Consent</a> &middot; <a href="mailto:hello@surghome.com">Contact</a></p>
+  </footer>
+
+</body>
+</html>
