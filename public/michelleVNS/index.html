@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="VNS Tracker">
+<title>Vagal Circuit Tracker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◉</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root{--green:#5B8A72;--red:#C76B6B;--amber:#D4944C;--blue:#6B7FB5;--plum:#8B6BB5;--rose:#B56B8A;--bg:#FAFAF7;--card:#fff;--border:#f0ede8;--muted:#999;--text:#2D2D2D;--input-bg:#FAFAF7;--input-border:#E0DDD6}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);max-width:480px;margin:0 auto;min-height:100vh;padding-bottom:80px;-webkit-font-smoothing:antialiased}
+input[type=range]{-webkit-appearance:none;appearance:none;background:var(--input-border);border-radius:3px;outline:none;height:6px;width:100%}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;border:2px solid currentColor;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.hdr{padding:20px 20px 12px;background:linear-gradient(180deg,#EDF5F0,var(--bg))}
+.hdr h1{font-family:'Instrument Serif',serif;font-size:28px;letter-spacing:-.5px;font-weight:400}
+.hdr .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.ct{padding:0 16px}
+.cd{background:var(--card);border-radius:16px;padding:20px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06);border:1px solid var(--border)}
+.cd.tap{cursor:pointer}.cd.dash{border:2px dashed #D4E8DC}
+.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.mono{font-family:'DM Mono',monospace}.serif{font-family:'Instrument Serif',serif}
+.btn{width:100%;padding:14px;border-radius:12px;border:none;background:var(--green);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.btn:disabled{background:var(--input-border)}.btn:active{opacity:.85}
+.pill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}
+.pill.better{background:#EDF5F0;color:var(--green)}.pill.worse{background:#FDEAEA;color:var(--red)}.pill.same{background:#FFF8F0;color:var(--amber)}
+.ob{flex:1;padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;border:1px solid var(--input-border);background:#fff;color:#888;text-align:center;transition:all .15s}
+.ob.on{border:2px solid var(--green);background:#EDF5F0;color:var(--green)}
+.bk{background:none;border:none;font-size:13px;color:var(--green);cursor:pointer;padding:8px 0;font-weight:600}
+input[type=number],textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--input-border);font-family:'DM Mono',monospace;font-size:16px;background:var(--input-bg)}
+textarea{font-family:'DM Sans',sans-serif;font-size:13px;resize:vertical}
+.sb{width:32px;height:32px;border-radius:8px;border:1px solid var(--input-border);background:var(--input-bg);color:#888;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;cursor:pointer;transition:all .1s}
+.sb.on{border:2px solid var(--green);background:#EDF5F0;color:var(--green)}
+.nv{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;background:#fff;border-top:1px solid var(--border);display:flex;justify-content:space-around;padding:8px 0 env(safe-area-inset-bottom,20px);z-index:100}
+.nv button{background:none;border:none;padding:6px 0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-family:'DM Sans',sans-serif;font-size:10px;color:#BCBCBC}
+.nv button.on{color:var(--green);font-weight:600}
+.nv .ic{font-size:22px}
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:999;background:var(--green);color:#fff;padding:10px 24px;border-radius:24px;font-size:14px;font-weight:600;box-shadow:0 4px 20px rgba(91,138,114,.3);opacity:0;transition:all .3s;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}.toast.hide{transform:translateX(-50%) translateY(-10px)}
+.toast.err{background:var(--red)}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.slw{margin-bottom:24px}.slh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.sll{font-size:14px;color:#4A4A4A;font-weight:500}.slv{font-family:'DM Mono',monospace;font-size:28px;font-weight:600}
+.slr{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px}
+.sync{font-size:10px;color:var(--muted);text-align:center;margin-top:4px}
+.sync.ok{color:var(--green)}.sync.fail{color:var(--red)}
+</style>
+</head>
+<body>
+
+<div id="toast" class="toast hide">Saved</div>
+<div class="hdr"><h1>Vagal Circuit Tracker</h1><div class="sub" id="hsub">Weekly symptom tracking</div></div>
+<div class="ct" id="app"></div>
+<div class="nv">
+  <button onclick="go('home')" id="n-home"><span class="ic">◉</span><span>Home</span></button>
+  <button onclick="go('checkin')" id="n-checkin"><span class="ic">✦</span><span>Check-in</span></button>
+  <button onclick="go('assess')" id="n-assess"><span class="ic">◈</span><span>Assess</span></button>
+  <button onclick="go('history')" id="n-history"><span class="ic">◷</span><span>History</span></button>
+</div>
+
+<script>
+// =============================================
+// CONFIG: Paste your Google Apps Script Web App URL here
+// =============================================
+const SHEET_URL = '';
+// =============================================
+
+const SK='vns-michelle-v1';
+const PROTO=[
+  {w:1,d:"30 min/day",t:"One session daily. Morning or evening. Use conductive paste. Start at low intensity, increase until mild tingle, then back off. Clip to left ear, cymba conchae."},
+  {w:2,d:"30 min/day",t:"Same as week 1. Building tolerance and habit. Note any changes in calm, sleep, energy. Don't increase duration yet."},
+  {w:3,d:"1 hour/day",t:"Extend to 60 minutes. One session or two 30-min sessions. Use EverCharge pad if needed. Keep intensity the same."},
+  {w:4,d:"1-2 hours/day",t:"Increase toward 2 hours if tolerated. Wear during calm activity: reading, TV, coffee. You should barely notice the device."},
+  {w:5,d:"2-3 hours/day",t:"Extend wear time. Split morning and evening if preferred. Goal is sustained vagal input, not intensity."},
+  {w:6,d:"3-4 hours/day",t:"Continue extending. Longer continuous sessions with EverCharge. If ear irritation, reduce for a day and resume."},
+  {w:7,d:"4+ hours/day",t:"Full extended dosing. Can wear during sleep if comfortable. This is target maintenance dose. Note if symptoms still improving or plateaued."},
+  {w:8,d:"4+ hours/day",t:"Maintenance. Complete formal assessments (PHQ-9, PSQI, FIQR) to compare against baseline. Continue at this dose if beneficial."},
+];
+const PHQ9=["Little interest or pleasure in doing things","Feeling down, depressed, or hopeless","Trouble falling/staying asleep, or sleeping too much","Feeling tired or having little energy","Poor appetite or overeating","Feeling bad about yourself","Trouble concentrating","Moving or speaking slowly, or being fidgety","Thoughts of self-harm"];
+const PSQI=["Overall sleep quality this week","How long to fall asleep (minutes)?","Hours of actual sleep per night","How often did you wake during the night?","How rested did you feel upon waking?"];
+const FIQR=["Physical function difficulty","Overall impact on daily life","Intensity of pain","Level of fatigue/tiredness","Stiffness level","Sleep quality (poor to good)","Depression level","Memory/concentration problems","Anxiety level","Tenderness to touch"];
+
+let D={ck:{},ax:[],sd:null,ix:null};
+let V='home',AT=null,AA=[];
+let F={pain:5,energy:5,fatigue:5,ha:0,mc:0,md:0,meds:'',gc:'same',wt:'',hrv:'',notes:''};
+
+function ld(){try{const s=localStorage.getItem(SK);if(s)D=JSON.parse(s)}catch(e){}}
+function sv(){try{localStorage.setItem(SK,JSON.stringify(D))}catch(e){}}
+
+function toast(msg,err){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className='toast'+(err?' err':'');
+  requestAnimationFrame(()=>{t.classList.add('show');t.classList.remove('hide')});
+  setTimeout(()=>{t.classList.remove('show');t.classList.add('hide')},1800);
+}
+
+async function post(payload){
+  if(!SHEET_URL){console.log('No SHEET_URL configured, skipping sync');return true}
+  try{
+    await fetch(SHEET_URL,{method:'POST',body:JSON.stringify(payload),headers:{'Content-Type':'text/plain'}});
+    return true;
+  }catch(e){console.error('Sheets sync failed:',e);return false}
+}
+
+function fmt(d){return new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}
+function tk(){return new Date().toISOString().split('T')[0]}
+function wb(a,b){return Math.floor((new Date(b)-new Date(a))/(7*864e5))+1}
+
+function spk(data,color,w,h){
+  w=w||140;h=h||36;if(!data||data.length<2)return'';
+  const mn=Math.min(...data),mx=Math.max(...data),r=mx-mn||1,s=w/(data.length-1);
+  const pts=data.map((v,i)=>`${i*s},${h-((v-mn)/r)*(h-8)-4}`).join(' ');
+  const cx=(data.length-1)*s,cy=h-((data[data.length-1]-mn)/r)*(h-8)-4;
+  return`<svg width="${w}" height="${h}" style="display:block"><polyline fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${pts}"/><circle cx="${cx}" cy="${cy}" r="4" fill="${color}"/></svg>`;
+}
+
+function sl(id,label,lo,hi,color,val){
+  return`<div class="slw"><div class="slh"><span class="sll">${label}</span><span class="slv" style="color:${color}" id="sv-${id}">${val}</span></div><input type="range" min="0" max="10" value="${val}" style="accent-color:${color}" oninput="F.${id}=+this.value;document.getElementById('sv-${id}').textContent=this.value"><div class="slr"><span>${lo}</span><span>${hi}</span></div></div>`;
+}
+
+function go(v,at){V=v;if(at!==undefined)AT=at;updnav();render();window.scrollTo(0,0)}
+function updnav(){document.querySelectorAll('.nv button').forEach(b=>b.classList.toggle('on',b.id==='n-'+V))}
+
+function updhdr(){
+  const ks=Object.keys(D.ck).sort(),ix=!!D.ix,wk=ix?wb(D.ix,tk()):0;
+  document.getElementById('hsub').textContent=ix?`Intervention week ${wk} · ${ks.length} check-ins`:D.sd?`Baseline · ${ks.length} check-ins`:'Weekly symptom tracking';
+}
+
+function render(){
+  updhdr();
+  const el=document.getElementById('app'),ks=Object.keys(D.ck).sort();
+  const ix=!!D.ix,iw=ix?wb(D.ix,tk()):0;
+  const ph=ix?PROTO[Math.min(iw-1,PROTO.length-1)]:null;
+  const bc=ks.filter(k=>!D.ix||k<D.ix).length;
+  const last=ks.length?D.ck[ks[ks.length-1]]:null,ld_=ks.length?ks[ks.length-1]:null;
+  const la={};(D.ax||[]).forEach(a=>{la[a.t]=a});
+  const l12=ks.slice(-12),tr=fn=>l12.map(k=>fn(D.ck[k])).filter(v=>v!==undefined);
+  const pT=tr(d=>d.pain),eT=tr(d=>d.energy),fT=tr(d=>d.fatigue),hT=tr(d=>d.hrv);
+
+  if(V==='home'){
+    let h='';
+    if(!ix){
+      h+=`<div class="cd" style="background:linear-gradient(135deg,#FFF8F0,#FFF4E8);border-color:#F0DFC8">
+        <div style="font-size:13px;font-weight:600;color:#B8863A;margin-bottom:4px">${bc>=2?'Baseline complete':'Baseline phase'}</div>
+        <div style="font-size:12px;color:#C4A060;margin-bottom:12px">${bc>=2?'Complete formal assessments if you haven\'t, then start intervention when your device arrives.':'Log '+(2-bc)+' more weekly check-in'+(2-bc>1?'s':'')+' before starting.'}</div>
+        ${bc>=2?'<button class="btn" style="background:#D4944C;font-size:14px;font-weight:700;padding:12px;border-radius:10px" onclick="startInt()">Start Intervention</button>':'<div style="height:4px;background:#F0DFC8;border-radius:2px"><div style="height:4px;background:#D4944C;border-radius:2px;width:'+Math.min(100,bc/2*100)+'%"></div></div>'}
+      </div>`;
+    }
+    if(ph){
+      h+=`<div class="cd" style="background:linear-gradient(135deg,#EDF5F0,#E4F0E8);border-color:#C8DDD0">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px"><span class="lbl" style="color:var(--green);font-weight:600">This week's protocol</span><span class="mono" style="font-size:11px;color:var(--green)">Wk ${iw}</span></div>
+        <div class="mono" style="font-size:22px;font-weight:600;margin-bottom:8px">${ph.d}</div>
+        <div style="font-size:12px;color:#5A7A66;line-height:1.5">${ph.t}</div>
+        ${[4,8,12].includes(iw)?'<div style="margin-top:12px;padding:8px 12px;border-radius:8px;background:#fff;font-size:12px;color:var(--amber);font-weight:600">Assessment due this week</div>':''}
+      </div>`;
+    }
+    if(last){
+      const ms=[{v:last.pain,l:'pain',b:last.pain>6},{v:last.energy,l:'energy',b:last.energy<4},{v:last.fatigue,l:'fatigue',b:last.fatigue>6}];
+      let mh='';ms.forEach(m=>{mh+=`<div><div class="mono" style="font-size:22px;font-weight:600;color:${m.b?'var(--red)':'var(--green)'}">${m.v}</div><div style="font-size:10px;color:var(--muted)">${m.l}</div></div>`;});
+      if(last.mc>0)mh+=`<div><div class="mono" style="font-size:22px;font-weight:600;color:var(--amber)">${last.mc}</div><div style="font-size:10px;color:var(--muted)">migraines</div></div>`;
+      h+=`<div class="cd tap" style="border-color:#D4E8DC" onclick="go('checkin')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="lbl">Last check-in · ${fmt(ld_)}</div><div style="display:flex;gap:16px;margin-top:8px">${mh}</div></div><span style="font-size:24px;color:#D4E8DC">→</span></div></div>`;
+    }else{
+      h+=`<div class="cd tap dash" onclick="go('checkin')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="lbl">No check-ins yet</div><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:6px">Tap to log your first weekly check-in</div></div><span style="font-size:24px;color:#D4E8DC">→</span></div></div>`;
+    }
+    if(pT.length>=3){
+      h+=`<div class="cd"><div class="lbl" style="margin-bottom:12px">Trends</div><div class="g2">
+        <div><div style="font-size:11px;color:var(--red);margin-bottom:4px">Pain</div>${spk(pT,'#C76B6B')}</div>
+        <div><div style="font-size:11px;color:var(--green);margin-bottom:4px">Energy</div>${spk(eT,'#5B8A72')}</div>
+        <div><div style="font-size:11px;color:var(--amber);margin-bottom:4px">Fatigue</div>${spk(fT,'#D4944C')}</div>
+        ${hT.length>=3?'<div><div style="font-size:11px;color:var(--blue);margin-bottom:4px">HRV</div>'+spk(hT,'#6B7FB5')+'</div>':''}
+      </div></div>`;
+    }
+    h+=`<div class="cd tap" style="text-align:center;padding:16px" onclick="go('assess',null)"><div style="font-size:20px;margin-bottom:4px">📊</div><div style="font-size:13px;font-weight:600">Formal Assessments</div><div style="font-size:11px;color:var(--muted);margin-top:2px">PHQ-9 · PSQI · FIQR</div></div>`;
+    if(Object.keys(la).length){
+      let sc='';Object.entries(la).forEach(([t,a])=>{sc+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div><div style="font-size:13px;font-weight:600">${t}</div><div style="font-size:10px;color:var(--muted)">${fmt(a.date)}</div></div><div class="mono" style="font-size:20px;font-weight:600;color:var(--green)">${a.total}</div></div>`;});
+      h+=`<div class="cd"><div class="lbl" style="margin-bottom:12px">Latest Scores</div>${sc}</div>`;
+    }
+    h+=`<div class="cd tap" style="text-align:center;padding:14px" onclick="go('history')"><div style="font-size:12px;font-weight:600;color:var(--green)">View Full History</div></div>`;
+    if(!SHEET_URL)h+=`<div class="sync fail" style="margin-top:8px">Sheets sync not configured</div>`;
+    h+=`<button onclick="xport()" style="width:100%;padding:10px;border:none;background:none;font-size:11px;color:var(--blue);cursor:pointer;margin-top:4px">Export data as JSON</button>`;
+    h+=`<button onclick="resetAll()" style="width:100%;padding:10px;border:none;background:none;font-size:11px;color:#ddd;cursor:pointer">Reset all data</button>`;
+    el.innerHTML=h;
+
+  }else if(V==='checkin'){
+    let h=`<button class="bk" onclick="go('home')">← Back</button>
+    <h2 class="serif" style="font-size:24px;margin-bottom:4px">Weekly Check-in</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:20px">How was your week overall?</p>
+    <div class="cd">${sl('pain','Average Pain','None','Worst','#C76B6B',F.pain)}${sl('energy','Average Energy','None','Full','#5B8A72',F.energy)}${sl('fatigue','Average Fatigue','None','Crushing','#D4944C',F.fatigue)}</div>
+    <div class="cd">
+      <div style="font-size:14px;font-weight:500;margin-bottom:10px">Headaches this week?</div>
+      <div style="display:flex;gap:10px;margin-bottom:${F.ha?16:0}px">
+        <button class="ob ${F.ha===0?'on':''}" onclick="F.ha=0;render()">No</button>
+        <button class="ob ${F.ha===1?'on':''}" onclick="F.ha=1;render()">Yes</button>
+      </div>
+      ${F.ha?`<div style="margin-bottom:16px"><label style="font-size:13px;font-weight:500">Migraine episodes</label><input type="number" min="0" value="${F.mc}" onchange="F.mc=+this.value" style="margin-top:6px"></div><div><label style="font-size:13px;font-weight:500">Average duration (hours)</label><input type="number" min="0" step="0.5" value="${F.md}" onchange="F.md=+this.value" style="margin-top:6px"></div>`:''}
+    </div>
+    <div class="cd">
+      <div style="font-size:14px;font-weight:500;margin-bottom:10px">Compared to last week:</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        ${['worse','same','better'].map(v=>{const c=v==='worse'?'var(--red)':v==='same'?'var(--amber)':'var(--green)';return`<button style="flex:1;padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;border:${F.gc===v?'2px solid '+c:'1px solid var(--input-border)'};background:${F.gc===v?'#fff':'#fff'};color:${F.gc===v?c:'#888'}" onclick="F.gc='${v}';render()">${v[0].toUpperCase()+v.slice(1)}</button>`;}).join('')}
+      </div>
+      <div style="margin-bottom:12px"><label style="font-size:13px;font-weight:500">Medications this week</label><textarea rows="2" placeholder="Medications and doses..." onchange="F.meds=this.value" style="margin-top:6px">${F.meds}</textarea></div>
+    </div>`;
+    if(ix){
+      h+=`<div class="cd"><div class="lbl" style="color:var(--green);font-weight:600;margin-bottom:8px">Device usage</div><div><label style="font-size:13px;font-weight:500">Average daily wear time (hours)</label><input type="number" min="0" step="0.5" value="${F.wt}" onchange="F.wt=this.value" placeholder="e.g. 2" style="margin-top:6px"></div></div>`;
+    }
+    h+=`<div class="cd"><div class="lbl" style="margin-bottom:8px">Optional</div>
+      <div style="margin-bottom:12px"><label style="font-size:11px;color:var(--blue)">HRV / RMSSD from Oura (ms)</label><input type="number" value="${F.hrv}" onchange="F.hrv=this.value" placeholder="e.g. 32" style="margin-top:4px;font-size:14px;padding:8px 10px;border-radius:8px"></div>
+      <div><label style="font-size:11px;color:var(--muted)">Notes</label><textarea rows="2" placeholder="Anything notable..." onchange="F.notes=this.value" style="margin-top:4px">${F.notes}</textarea></div>
+    </div>
+    <button class="btn" style="font-size:16px;font-weight:700;padding:16px;border-radius:14px;margin-top:4px" onclick="subCk()">Save Check-in</button>`;
+    el.innerHTML=h;
+
+  }else if(V==='assess'){
+    if(!AT){
+      let h=`<button class="bk" onclick="go('home')">← Back</button>
+      <h2 class="serif" style="font-size:24px;margin-bottom:4px">Assessments</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:20px">Baseline, week 4, week 8</p>`;
+      [{k:'PHQ-9',s:'Depression · 9 items',c:'var(--blue)'},{k:'PSQI',s:'Sleep quality · 5 items',c:'var(--plum)'},{k:'FIQR',s:'Symptom impact · 10 items',c:'var(--rose)'}].forEach(a=>{
+        const l=la[a.k];
+        h+=`<div class="cd tap" onclick="stAx('${a.k}')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:15px;font-weight:700;color:${a.c}">${a.k}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">${a.s}</div>${l?'<div class="mono" style="font-size:11px;color:var(--muted);margin-top:4px">Last: '+l.total+' on '+fmt(l.date)+'</div>':''}</div><span style="font-size:20px;color:#D4E8DC">→</span></div></div>`;
+      });
+      el.innerHTML=h;
+    }else{
+      const qs=AT==='PHQ-9'?PHQ9:AT==='PSQI'?PSQI:FIQR;
+      const s5=AT==='PHQ-9'||AT==='PSQI';const mx=s5?5:11;
+      if(!AA.length)AA=qs.map(()=>0);
+      let h=`<button class="bk" onclick="go('assess',null);AA=[]">← Back</button>
+      <h2 class="serif" style="font-size:24px;margin-bottom:4px">${AT}</h2>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:20px">${s5?'0 = not at all, 4 = nearly every day':'0 = none, 10 = worst'}</p>`;
+      qs.forEach((q,i)=>{
+        let bs='';for(let n=0;n<mx;n++){bs+=`<button class="sb ${AA[i]===n?'on':''}" onclick="AA[${i}]=${n};render()">${n}</button>`;}
+        h+=`<div style="margin-bottom:20px"><div style="font-size:13px;color:#4A4A4A;margin-bottom:6px">${q}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${bs}</div></div>`;
+      });
+      h+=`<button class="btn" style="margin-top:8px" onclick="subAx()">Save Assessment</button>`;
+      el.innerHTML=h;
+    }
+
+  }else if(V==='history'){
+    let h=`<button class="bk" onclick="go('home')">← Back</button>
+    <h2 class="serif" style="font-size:24px;margin-bottom:16px">History</h2>`;
+    if(!ks.length)h+=`<div class="cd"><div style="font-size:13px;color:var(--muted);text-align:center">No entries yet</div></div>`;
+    [...ks].reverse().forEach(k=>{
+      const d=D.ck[k],ib=D.ix&&k<D.ix,wk=D.ix&&k>=D.ix?'Wk '+wb(D.ix,k):null;
+      let ms='';[{v:d.pain,l:'pain',b:d.pain>6},{v:d.energy,l:'energy',b:d.energy<4},{v:d.fatigue,l:'fatigue',b:d.fatigue>6}].forEach(m=>{ms+=`<div style="text-align:center"><div class="mono" style="font-size:16px;font-weight:600;color:${m.b?'var(--red)':'var(--green)'}">${m.v}</div><div style="font-size:9px;color:var(--muted)">${m.l}</div></div>`;});
+      if(d.hrv)ms+=`<div style="text-align:center"><div class="mono" style="font-size:16px;font-weight:600;color:var(--blue)">${d.hrv}</div><div style="font-size:9px;color:var(--muted)">HRV</div></div>`;
+      h+=`<div class="cd"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><div style="font-size:13px;font-weight:600">${fmt(k)}</div><div style="font-size:10px;color:${ib?'var(--amber)':'var(--green)'}">${ib?'Baseline':wk||''}</div></div><div style="display:flex;gap:14px">${ms}</div></div>
+      ${d.wt?'<div style="font-size:11px;color:var(--green);margin-bottom:4px">'+d.wt+'h/day device wear</div>':''}
+      ${d.mc>0?'<div style="font-size:11px;color:var(--amber);margin-bottom:4px">'+d.mc+' migraine'+(d.mc>1?'s':'')+' · avg '+d.md+'h</div>':''}
+      <span class="pill ${d.gc}">${d.gc}</span>
+      ${d.notes?'<div style="font-size:11px;color:#888;margin-top:6px;font-style:italic">'+d.notes+'</div>':''}
+      </div>`;
+    });
+    if((D.ax||[]).length){
+      h+=`<h3 class="serif" style="font-size:18px;margin-top:24px;margin-bottom:12px">Assessments</h3>`;
+      [...D.ax].reverse().forEach(a=>{h+=`<div class="cd"><div style="display:flex;justify-content:space-between"><div><div style="font-size:13px;font-weight:600">${a.t}</div><div style="font-size:11px;color:var(--muted)">${fmt(a.date)}</div></div><div class="mono" style="font-size:22px;font-weight:600;color:var(--green)">${a.total}</div></div></div>`;});
+    }
+    el.innerHTML=h;
+  }
+}
+
+async function subCk(){
+  const key=tk(),ts=new Date().toISOString();
+  const entry={pain:F.pain,energy:F.energy,fatigue:F.fatigue,ha:F.ha,mc:F.mc,md:F.md,meds:F.meds,gc:F.gc,notes:F.notes,ts};
+  if(F.hrv)entry.hrv=parseFloat(F.hrv);
+  if(F.wt)entry.wt=parseFloat(F.wt);
+  D.ck[key]=entry;if(!D.sd)D.sd=key;
+  sv();
+
+  const ix=!!D.ix,iw=ix?wb(D.ix,key):0;
+  const ph=ix?PROTO[Math.min(iw-1,PROTO.length-1)]:null;
+  const ok=await post({
+    type:'checkin',timestamp:ts,date:key,
+    week:ix?iw:'baseline',phase:ph?ph.d:'baseline',
+    pain:F.pain,energy:F.energy,fatigue:F.fatigue,
+    headache:F.ha,migraineCount:F.mc,migraineDuration:F.md,
+    globalChange:F.gc,wearTime:F.wt||'',hrv:F.hrv||'',
+    meds:F.meds,notes:F.notes
+  });
+
+  toast(ok?'Saved':'Saved locally (sync failed)',!ok);
+  F={pain:5,energy:5,fatigue:5,ha:0,mc:0,md:0,meds:'',gc:'same',wt:'',hrv:'',notes:''};
+  go('home');
+}
+
+function stAx(type){AT=type;AA=(type==='PHQ-9'?PHQ9:type==='PSQI'?PSQI:FIQR).map(()=>0);render()}
+
+async function subAx(){
+  const total=AA.reduce((a,b)=>a+b,0),ts=new Date().toISOString(),date=tk();
+  D.ax.push({t:AT,answers:[...AA],total,date,ts});
+  sv();
+  await post({type:'assessment',timestamp:ts,date,assessType:AT,total,answers:[...AA]});
+  AT=null;AA=[];toast('Saved');go('home');
+}
+
+async function startInt(){
+  D.ix=tk();sv();
+  await post({type:'event',timestamp:new Date().toISOString(),event:'intervention_start'});
+  toast('Intervention started');render();
+}
+
+function resetAll(){if(confirm('Clear all data? Cannot be undone.')){D={ck:{},ax:[],sd:null,ix:null};sv();render()}}
+
+function xport(){
+  const blob=new Blob([JSON.stringify(D,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='vagal-tracker-export-'+tk()+'.json';a.click();
+}
+
+ld();updnav();render();
+</script>
+</body>
+</html>
