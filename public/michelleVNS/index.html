@@ -30,8 +30,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 .ob{flex:1;padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;border:1px solid var(--input-border);background:#fff;color:#888;text-align:center;transition:all .15s}
 .ob.on{border:2px solid var(--green);background:#EDF5F0;color:var(--green)}
 .bk{background:none;border:none;font-size:13px;color:var(--green);cursor:pointer;padding:8px 0;font-weight:600}
-input[type=number],textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--input-border);font-family:'DM Mono',monospace;font-size:16px;background:var(--input-bg)}
+input[type=number],textarea,input[type=url]{width:100%;padding:10px;border-radius:10px;border:1px solid var(--input-border);font-family:'DM Mono',monospace;font-size:16px;background:var(--input-bg)}
 textarea{font-family:'DM Sans',sans-serif;font-size:13px;resize:vertical}
+input[type=url]{font-size:12px}
 .sb{width:32px;height:32px;border-radius:8px;border:1px solid var(--input-border);background:var(--input-bg);color:#888;font-family:'DM Mono',monospace;font-size:13px;font-weight:600;cursor:pointer;transition:all .1s}
 .sb.on{border:2px solid var(--green);background:#EDF5F0;color:var(--green)}
 .nv{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;background:#fff;border-top:1px solid var(--border);display:flex;justify-content:space-around;padding:8px 0 env(safe-area-inset-bottom,20px);z-index:100}
@@ -59,14 +60,16 @@ textarea{font-family:'DM Sans',sans-serif;font-size:13px;resize:vertical}
   <button onclick="go('checkin')" id="n-checkin"><span class="ic">✦</span><span>Check-in</span></button>
   <button onclick="go('assess')" id="n-assess"><span class="ic">◈</span><span>Assess</span></button>
   <button onclick="go('history')" id="n-history"><span class="ic">◷</span><span>History</span></button>
+  <button onclick="go('settings')" id="n-settings"><span class="ic">⚙</span><span>Settings</span></button>
 </div>
 
 <script>
 // =============================================
-// CONFIG: Paste your Google Apps Script Web App URL here
+// Sheets URL stored in localStorage, set via Settings tab
 // =============================================
-const SHEET_URL = '';
-// =============================================
+const SHEET_URL_KEY = 'vns-michelle-sheet-url';
+function getSheetUrl(){ return (localStorage.getItem(SHEET_URL_KEY)||'').trim(); }
+function setSheetUrl(url){ localStorage.setItem(SHEET_URL_KEY, url.trim()); }
 
 const SK='vns-michelle-v1';
 const PROTO=[
@@ -98,9 +101,10 @@ function toast(msg,err){
 }
 
 async function post(payload){
-  if(!SHEET_URL){console.log('No SHEET_URL configured, skipping sync');return true}
+  const url=getSheetUrl();
+  if(!url){console.log('No sheet URL configured, skipping sync');return true}
   try{
-    await fetch(SHEET_URL,{method:'POST',body:JSON.stringify(payload),headers:{'Content-Type':'text/plain'}});
+    await fetch(url,{method:'POST',body:JSON.stringify(payload),headers:{'Content-Type':'text/plain'}});
     return true;
   }catch(e){console.error('Sheets sync failed:',e);return false}
 }
@@ -126,7 +130,7 @@ function updnav(){document.querySelectorAll('.nv button').forEach(b=>b.classList
 
 function updhdr(){
   const ks=Object.keys(D.ck).sort(),ix=!!D.ix,wk=ix?wb(D.ix,tk()):0;
-  document.getElementById('hsub').textContent=ix?`Intervention week ${wk} · ${ks.length} check-ins`:D.sd?`Baseline · ${ks.length} check-ins`:'Weekly symptom tracking';
+  document.getElementById('hsub').textContent=ix?`Intervention week ${wk} \u00b7 ${ks.length} check-ins`:D.sd?`Baseline \u00b7 ${ks.length} check-ins`:'Weekly symptom tracking';
 }
 
 function render(){
@@ -161,9 +165,9 @@ function render(){
       const ms=[{v:last.pain,l:'pain',b:last.pain>6},{v:last.energy,l:'energy',b:last.energy<4},{v:last.fatigue,l:'fatigue',b:last.fatigue>6}];
       let mh='';ms.forEach(m=>{mh+=`<div><div class="mono" style="font-size:22px;font-weight:600;color:${m.b?'var(--red)':'var(--green)'}">${m.v}</div><div style="font-size:10px;color:var(--muted)">${m.l}</div></div>`;});
       if(last.mc>0)mh+=`<div><div class="mono" style="font-size:22px;font-weight:600;color:var(--amber)">${last.mc}</div><div style="font-size:10px;color:var(--muted)">migraines</div></div>`;
-      h+=`<div class="cd tap" style="border-color:#D4E8DC" onclick="go('checkin')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="lbl">Last check-in · ${fmt(ld_)}</div><div style="display:flex;gap:16px;margin-top:8px">${mh}</div></div><span style="font-size:24px;color:#D4E8DC">→</span></div></div>`;
+      h+=`<div class="cd tap" style="border-color:#D4E8DC" onclick="go('checkin')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="lbl">Last check-in \u00b7 ${fmt(ld_)}</div><div style="display:flex;gap:16px;margin-top:8px">${mh}</div></div><span style="font-size:24px;color:#D4E8DC">\u2192</span></div></div>`;
     }else{
-      h+=`<div class="cd tap dash" onclick="go('checkin')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="lbl">No check-ins yet</div><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:6px">Tap to log your first weekly check-in</div></div><span style="font-size:24px;color:#D4E8DC">→</span></div></div>`;
+      h+=`<div class="cd tap dash" onclick="go('checkin')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="lbl">No check-ins yet</div><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:6px">Tap to log your first weekly check-in</div></div><span style="font-size:24px;color:#D4E8DC">\u2192</span></div></div>`;
     }
     if(pT.length>=3){
       h+=`<div class="cd"><div class="lbl" style="margin-bottom:12px">Trends</div><div class="g2">
@@ -173,19 +177,19 @@ function render(){
         ${hT.length>=3?'<div><div style="font-size:11px;color:var(--blue);margin-bottom:4px">HRV</div>'+spk(hT,'#6B7FB5')+'</div>':''}
       </div></div>`;
     }
-    h+=`<div class="cd tap" style="text-align:center;padding:16px" onclick="go('assess',null)"><div style="font-size:20px;margin-bottom:4px">📊</div><div style="font-size:13px;font-weight:600">Formal Assessments</div><div style="font-size:11px;color:var(--muted);margin-top:2px">PHQ-9 · PSQI · FIQR</div></div>`;
+    h+=`<div class="cd tap" style="text-align:center;padding:16px" onclick="go('assess',null)"><div style="font-size:20px;margin-bottom:4px">\ud83d\udcca</div><div style="font-size:13px;font-weight:600">Formal Assessments</div><div style="font-size:11px;color:var(--muted);margin-top:2px">PHQ-9 \u00b7 PSQI \u00b7 FIQR</div></div>`;
     if(Object.keys(la).length){
       let sc='';Object.entries(la).forEach(([t,a])=>{sc+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div><div style="font-size:13px;font-weight:600">${t}</div><div style="font-size:10px;color:var(--muted)">${fmt(a.date)}</div></div><div class="mono" style="font-size:20px;font-weight:600;color:var(--green)">${a.total}</div></div>`;});
       h+=`<div class="cd"><div class="lbl" style="margin-bottom:12px">Latest Scores</div>${sc}</div>`;
     }
     h+=`<div class="cd tap" style="text-align:center;padding:14px" onclick="go('history')"><div style="font-size:12px;font-weight:600;color:var(--green)">View Full History</div></div>`;
-    if(!SHEET_URL)h+=`<div class="sync fail" style="margin-top:8px">Sheets sync not configured</div>`;
+    if(!getSheetUrl())h+=`<div class="sync fail" style="margin-top:8px;cursor:pointer" onclick="go('settings')">Sheets sync not configured \u2014 tap to set up</div>`;
     h+=`<button onclick="xport()" style="width:100%;padding:10px;border:none;background:none;font-size:11px;color:var(--blue);cursor:pointer;margin-top:4px">Export data as JSON</button>`;
     h+=`<button onclick="resetAll()" style="width:100%;padding:10px;border:none;background:none;font-size:11px;color:#ddd;cursor:pointer">Reset all data</button>`;
     el.innerHTML=h;
 
   }else if(V==='checkin'){
-    let h=`<button class="bk" onclick="go('home')">← Back</button>
+    let h=`<button class="bk" onclick="go('home')">\u2190 Back</button>
     <h2 class="serif" style="font-size:24px;margin-bottom:4px">Weekly Check-in</h2>
     <p style="font-size:12px;color:var(--muted);margin-bottom:20px">How was your week overall?</p>
     <div class="cd">${sl('pain','Average Pain','None','Worst','#C76B6B',F.pain)}${sl('energy','Average Energy','None','Full','#5B8A72',F.energy)}${sl('fatigue','Average Fatigue','None','Crushing','#D4944C',F.fatigue)}</div>
@@ -200,7 +204,7 @@ function render(){
     <div class="cd">
       <div style="font-size:14px;font-weight:500;margin-bottom:10px">Compared to last week:</div>
       <div style="display:flex;gap:8px;margin-bottom:16px">
-        ${['worse','same','better'].map(v=>{const c=v==='worse'?'var(--red)':v==='same'?'var(--amber)':'var(--green)';return`<button style="flex:1;padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;border:${F.gc===v?'2px solid '+c:'1px solid var(--input-border)'};background:${F.gc===v?'#fff':'#fff'};color:${F.gc===v?c:'#888'}" onclick="F.gc='${v}';render()">${v[0].toUpperCase()+v.slice(1)}</button>`;}).join('')}
+        ${['worse','same','better'].map(v=>{const c=v==='worse'?'var(--red)':v==='same'?'var(--amber)':'var(--green)';return`<button style="flex:1;padding:12px;border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;border:${F.gc===v?'2px solid '+c:'1px solid var(--input-border)'};background:#fff;color:${F.gc===v?c:'#888'}" onclick="F.gc='${v}';render()">${v[0].toUpperCase()+v.slice(1)}</button>`;}).join('')}
       </div>
       <div style="margin-bottom:12px"><label style="font-size:13px;font-weight:500">Medications this week</label><textarea rows="2" placeholder="Medications and doses..." onchange="F.meds=this.value" style="margin-top:6px">${F.meds}</textarea></div>
     </div>`;
@@ -216,19 +220,19 @@ function render(){
 
   }else if(V==='assess'){
     if(!AT){
-      let h=`<button class="bk" onclick="go('home')">← Back</button>
+      let h=`<button class="bk" onclick="go('home')">\u2190 Back</button>
       <h2 class="serif" style="font-size:24px;margin-bottom:4px">Assessments</h2>
       <p style="font-size:12px;color:var(--muted);margin-bottom:20px">Baseline, week 4, week 8</p>`;
-      [{k:'PHQ-9',s:'Depression · 9 items',c:'var(--blue)'},{k:'PSQI',s:'Sleep quality · 5 items',c:'var(--plum)'},{k:'FIQR',s:'Symptom impact · 10 items',c:'var(--rose)'}].forEach(a=>{
+      [{k:'PHQ-9',s:'Depression \u00b7 9 items',c:'var(--blue)'},{k:'PSQI',s:'Sleep quality \u00b7 5 items',c:'var(--plum)'},{k:'FIQR',s:'Symptom impact \u00b7 10 items',c:'var(--rose)'}].forEach(a=>{
         const l=la[a.k];
-        h+=`<div class="cd tap" onclick="stAx('${a.k}')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:15px;font-weight:700;color:${a.c}">${a.k}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">${a.s}</div>${l?'<div class="mono" style="font-size:11px;color:var(--muted);margin-top:4px">Last: '+l.total+' on '+fmt(l.date)+'</div>':''}</div><span style="font-size:20px;color:#D4E8DC">→</span></div></div>`;
+        h+=`<div class="cd tap" onclick="stAx('${a.k}')"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:15px;font-weight:700;color:${a.c}">${a.k}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">${a.s}</div>${l?'<div class="mono" style="font-size:11px;color:var(--muted);margin-top:4px">Last: '+l.total+' on '+fmt(l.date)+'</div>':''}</div><span style="font-size:20px;color:#D4E8DC">\u2192</span></div></div>`;
       });
       el.innerHTML=h;
     }else{
       const qs=AT==='PHQ-9'?PHQ9:AT==='PSQI'?PSQI:FIQR;
       const s5=AT==='PHQ-9'||AT==='PSQI';const mx=s5?5:11;
       if(!AA.length)AA=qs.map(()=>0);
-      let h=`<button class="bk" onclick="go('assess',null);AA=[]">← Back</button>
+      let h=`<button class="bk" onclick="go('assess',null);AA=[]">\u2190 Back</button>
       <h2 class="serif" style="font-size:24px;margin-bottom:4px">${AT}</h2>
       <p style="font-size:12px;color:var(--muted);margin-bottom:20px">${s5?'0 = not at all, 4 = nearly every day':'0 = none, 10 = worst'}</p>`;
       qs.forEach((q,i)=>{
@@ -240,7 +244,7 @@ function render(){
     }
 
   }else if(V==='history'){
-    let h=`<button class="bk" onclick="go('home')">← Back</button>
+    let h=`<button class="bk" onclick="go('home')">\u2190 Back</button>
     <h2 class="serif" style="font-size:24px;margin-bottom:16px">History</h2>`;
     if(!ks.length)h+=`<div class="cd"><div style="font-size:13px;color:var(--muted);text-align:center">No entries yet</div></div>`;
     [...ks].reverse().forEach(k=>{
@@ -249,7 +253,7 @@ function render(){
       if(d.hrv)ms+=`<div style="text-align:center"><div class="mono" style="font-size:16px;font-weight:600;color:var(--blue)">${d.hrv}</div><div style="font-size:9px;color:var(--muted)">HRV</div></div>`;
       h+=`<div class="cd"><div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><div><div style="font-size:13px;font-weight:600">${fmt(k)}</div><div style="font-size:10px;color:${ib?'var(--amber)':'var(--green)'}">${ib?'Baseline':wk||''}</div></div><div style="display:flex;gap:14px">${ms}</div></div>
       ${d.wt?'<div style="font-size:11px;color:var(--green);margin-bottom:4px">'+d.wt+'h/day device wear</div>':''}
-      ${d.mc>0?'<div style="font-size:11px;color:var(--amber);margin-bottom:4px">'+d.mc+' migraine'+(d.mc>1?'s':'')+' · avg '+d.md+'h</div>':''}
+      ${d.mc>0?'<div style="font-size:11px;color:var(--amber);margin-bottom:4px">'+d.mc+' migraine'+(d.mc>1?'s':'')+' \u00b7 avg '+d.md+'h</div>':''}
       <span class="pill ${d.gc}">${d.gc}</span>
       ${d.notes?'<div style="font-size:11px;color:#888;margin-top:6px;font-style:italic">'+d.notes+'</div>':''}
       </div>`;
@@ -259,7 +263,50 @@ function render(){
       [...D.ax].reverse().forEach(a=>{h+=`<div class="cd"><div style="display:flex;justify-content:space-between"><div><div style="font-size:13px;font-weight:600">${a.t}</div><div style="font-size:11px;color:var(--muted)">${fmt(a.date)}</div></div><div class="mono" style="font-size:22px;font-weight:600;color:var(--green)">${a.total}</div></div></div>`;});
     }
     el.innerHTML=h;
+
+  }else if(V==='settings'){
+    const cur=getSheetUrl();
+    const connected=!!cur;
+    let h=`<button class="bk" onclick="go('home')">\u2190 Back</button>
+    <h2 class="serif" style="font-size:24px;margin-bottom:4px">Settings</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:20px">Google Sheets sync</p>
+    <div class="cd">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <div style="width:8px;height:8px;border-radius:50%;background:${connected?'var(--green)':'var(--red)'}"></div>
+        <div style="font-size:13px;font-weight:600">${connected?'Connected':'Not connected'}</div>
+      </div>
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--muted)">Apps Script Web App URL</label>
+        <input type="url" id="sheet-url-input" value="${cur}" placeholder="https://script.google.com/macros/s/.../exec" style="margin-top:6px">
+      </div>
+      <button class="btn" style="font-size:14px;padding:12px" onclick="saveSheetUrl()">Save</button>
+      ${connected?'<button onclick="testSync()" style="width:100%;padding:10px;border:none;background:none;font-size:12px;color:var(--blue);cursor:pointer;margin-top:8px">Test connection</button>':''}
+    </div>
+    <div class="cd" style="margin-top:8px">
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px">Setup</div>
+        1. Create a Google Sheet<br>
+        2. Extensions \u2192 Apps Script<br>
+        3. Paste the apps-script.js code<br>
+        4. Deploy \u2192 New deployment \u2192 Web app<br>
+        5. Set access to "Anyone"<br>
+        6. Copy the URL and paste above
+      </div>
+    </div>`;
+    el.innerHTML=h;
   }
+}
+
+function saveSheetUrl(){
+  const val=document.getElementById('sheet-url-input').value;
+  setSheetUrl(val);
+  toast(val?'Sheets URL saved':'Sheets URL cleared');
+  render();
+}
+
+async function testSync(){
+  const ok=await post({type:'event',timestamp:new Date().toISOString(),event:'connection_test'});
+  toast(ok?'Sync OK':'Sync failed',!ok);
 }
 
 async function subCk(){
