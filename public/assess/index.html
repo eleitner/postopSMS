@@ -131,19 +131,49 @@ function App() {
   // Draft save/load
   function saveDraft() {
     if (!form.patientId) { flash("Enter Patient ID", "err"); return; }
+    var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    // Save locally
     var updated = Object.assign({}, drafts);
-    updated[form.patientId] = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    updated[form.patientId] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
-    flash("Draft saved for " + form.patientId);
+    // Save to cloud
+    if (sheetUrl) {
+      var cloudData = Object.assign({}, draftData, { _action: "saveDraft" });
+      fetch(sheetUrl, { method: "POST", body: JSON.stringify(cloudData) })
+        .then(function() { flash("Draft saved locally + cloud"); })
+        .catch(function() { flash("Draft saved locally (cloud failed)", "warn"); });
+    } else {
+      flash("Draft saved locally");
+    }
   }
 
-  function loadDraft() {
+  async function loadDraft() {
     if (!form.patientId) { flash("Enter Study ID to load", "err"); return; }
-    var d = drafts[form.patientId];
-    if (!d) { flash("No draft found for " + form.patientId, "warn"); return; }
+    var draftData = null;
+
+    // Try cloud first
+    if (sheetUrl) {
+      try {
+        flash("Loading from cloud...");
+        var url = sheetUrl + "?action=loadDraft&id=" + encodeURIComponent(form.patientId);
+        var resp = await fetch(url, { redirect: "follow" });
+        var result = await resp.json();
+        if (result.status === "ok" && result.draft) {
+          draftData = result.draft;
+        }
+      } catch(e) {}
+    }
+
+    // Fall back to local
+    if (!draftData) {
+      draftData = drafts[form.patientId];
+    }
+
+    if (!draftData) { flash("No draft found for " + form.patientId, "warn"); return; }
+
     // Load intake + device data, clear sensory fields for fresh assessment
-    var loaded = Object.assign({}, d, {
+    var loaded = Object.assign({}, draftData, {
       date: new Date().toISOString().split("T")[0],
       nrsPainPre: "", nrsPainPost: "",
       rmssdPre: "", rmssdPost: "",
@@ -163,10 +193,15 @@ function App() {
       notes: "",
     });
     setForm(loaded);
+    // Also save to local drafts
+    var updated = Object.assign({}, drafts);
+    updated[form.patientId] = draftData;
+    setDrafts(updated);
+    storage.set(DRAFTS_KEY, JSON.stringify(updated));
     // Auto-fill name from directory
     var dirEntry = directory.find(function(e) { return e.id === form.patientId; });
     if (dirEntry) setPatientName(dirEntry.name);
-    flash("Loaded " + form.patientId + " - sensory fields cleared for new assessment");
+    flash("Loaded " + form.patientId);
   }
 
   function getDraftList() { return Object.keys(drafts); }
@@ -434,9 +469,27 @@ examBlock("EXAM", true) + "\n" +
     setDrafts(d);
     try { storage.set(DRAFTS_KEY, JSON.stringify(d)); } catch(e) {}
     var sheetOk = false;
-    if (sheetUrl) { try { await fetch(sheetUrl, {method:"POST", mode:"no-cors", body:JSON.stringify(row)}); sheetOk = true; } catch(e) {} }
+    if (sheetUrl) {
+      try {
+        // Include note text and photos for Google Doc creation
+        var submitData = Object.assign({}, row);
+        submitData._noteText = generateNote();
+        submitData._patientName = patientName;
+        // Include photos for D0
+        if (form.visitType === "D0") {
+          var pid = form.patientId;
+          var patientPhotos = pid ? getPhotosForPatient(pid) : [];
+          submitData._photos = patientPhotos.map(function(p) {
+            var matched = PHOTO_TYPES.find(function(t){return t.key===p.type});
+            return { type: p.type, label: (matched ? matched.label : p.type), data: p.data };
+          });
+        }
+        await fetch(sheetUrl, {method:"POST", mode:"no-cors", body:JSON.stringify(submitData)});
+        sheetOk = true;
+      } catch(e) {}
+    }
     setSubmitting(false);
-    flash("Saved" + (sheetOk ? " + Sheet updated" : sheetUrl ? " (Sheet may have updated)" : "") + ". Paste into chart.", "ok");
+    flash("Saved" + (sheetOk ? " + Sheet + Doc created" : sheetUrl ? " (Sheet may have updated)" : "") + ".", "ok");
     setPatientName(""); // clear name after submit, it's in the directory now
   }
 
