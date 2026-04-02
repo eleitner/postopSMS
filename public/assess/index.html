@@ -9,10 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
-<style>
-  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fff; }
-  * { -webkit-tap-highlight-color: transparent; }
-</style>
+<style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fff}*{-webkit-tap-highlight-color:transparent}</style>
 </head>
 <body>
 <div id="root"></div>
@@ -20,323 +17,674 @@
 const { useState, useEffect } = React;
 
 const STORAGE_KEY = "dpn-assessments";
+const DRAFTS_KEY = "dpn-drafts";
+const PHOTOS_KEY = "dpn-photos";
 const SHEET_URL_KEY = "dpn-sheet-url";
+const DIRECTORY_KEY = "dpn-directory";
 
-// Use localStorage for standalone version
 const storage = {
-  get(key) { const v = localStorage.getItem(key); return v ? { value: v } : null; },
-  set(key, value) { localStorage.setItem(key, value); return { key, value }; },
-  delete(key) { localStorage.removeItem(key); return { key, deleted: true }; }
+  get(k) { const v = localStorage.getItem(k); return v ? { value: v } : null; },
+  set(k, v) { localStorage.setItem(k, v); return { key: k, value: v }; },
+  delete(k) { localStorage.removeItem(k); return { key: k, deleted: true }; }
 };
 
-const defaultState = {
-  patientId: "",
-  date: new Date().toISOString().split("T")[0],
-  visitType: "T0",
-  diabetesDuration: "",
-  diabetesType: "Type 2",
-  age: "",
-  sex: "",
-  nrsPainPre: "",
-  nrsPainPost: "",
-  rmssdPre: "",
-  rmssdPost: "",
-  leftFootPre: Array(12).fill(false),
-  leftFootPost: Array(12).fill(false),
-  rightFootPre: Array(12).fill(false),
-  rightFootPost: Array(12).fill(false),
-  coinQuarterPre: "",
-  coinQuarterPost: "",
-  coinDimePre: "",
-  coinDimePost: "",
-  coinPennyPre: "",
-  coinPennyPost: "",
-  slsRightSecPre: "",
-  slsRightSecPost: "",
-  slsRightFallPre: "No",
-  slsRightFallPost: "No",
-  slsLeftSecPre: "",
-  slsLeftSecPost: "",
-  slsLeftFallPre: "No",
-  slsLeftFallPost: "No",
-  walkTimePre: "",
-  walkTimePost: "",
-  notes: "",
-};
+const PMHX_OPTIONS = ["HTN","Hyperlipidemia","Obesity","CAD","CHF","PVD","COPD","Asthma","CKD","Retinopathy","Depression","CAN"];
+const PAIN_DESC = ["Burning","Tingling","Numbness","Dysesthesia","Allodynia","Paresthesias","Hyperalgesia","Throbbing","Sharp","Aching","Prickly","Pressure","Shooting"];
+const PRIOR_TX = ["Physical therapy","Compression stockings","OTC medications","Gabapentin","Pregabalin","Duloxetine","Amitriptyline","Capsaicin","TENS unit","Opiates (current)","Opiates (past)","Other Rx"];
+const PRIOR_DME = ["TENS unit","Walking boot","Custom orthotics","Wheelchair","Compression stockings"];
+const FUNCTIONAL = ["Decreased activity","Decreased mobility","Sleep disturbance","Decreased quality of life","Balance issues / fall risk"];
+const ALLERGY_COMMON = ["NKDA","Penicillin","Betadine","Chlorhexidine"];
 
-const siteLabels = [
-  "Great toe", "2nd toe", "3rd toe", "4th toe", "5th toe",
-  "Met head 1", "Met head 3", "Met head 5",
-  "Midfoot med", "Midfoot lat", "Arch", "Heel",
+const siteLabels = ["Great toe","2nd toe","3rd toe","4th toe","5th toe","Met head 1","Met head 3","Met head 5","Midfoot med","Midfoot lat","Arch","Heel"];
+
+const PHOTO_TYPES = [
+  { key: "consent_procedure", label: "Procedure Consent", icon: "P" },
+  { key: "consent_social", label: "Social Media Consent", icon: "S" },
+  { key: "consent_data", label: "Data Use Consent", icon: "D" },
+  { key: "serial", label: "Device Serial / Lot", icon: "#" },
+  { key: "earmap", label: "Ear Map", icon: "M" },
+  { key: "earphoto", label: "Ear Photo", icon: "E" },
 ];
 
 function sumChecked(arr) { return arr.filter(Boolean).length; }
+function toggleInArray(arr, val) { return arr.includes(val) ? arr.filter(function(v){return v!==val}) : arr.concat([val]); }
+
+const defaultState = {
+  patientId: "", date: new Date().toISOString().split("T")[0], visitType: "T0",
+  diabetesDuration: "", diabetesType: "Type 2", age: "", sex: "",
+  // Intake
+  referringProvider: "", cc: "diabetic nerve pain",
+  painRest: "", painBest: "", painWorst: "",
+  painDescriptors: [], painNotes: "",
+  functionalLimitations: [], functionalNotes: "",
+  balanceIssues: "No",
+  pmhx: [], pshx: "", pmhxNotes: "",
+  allergies: [], allergiesOther: "",
+  medications: "",
+  priorTx: [], priorDME: [], txNotes: "",
+  socialTob: "No", socialEtOH: "No", socialSubstance: "No", socialNotes: "",
+  a1c: "", bgFasting: "", glucoseControl: "", labNotes: "",
+  // Device
+  trigeminalOhms: "", trigeminalHz: "",
+  c2Ohms: "", c2Hz: "",
+  vagusOhms: "", vagusHz: "",
+  deviceNotes: "",
+  // Sensory assessment
+  nrsPainPre: "", nrsPainPost: "",
+  rmssdPre: "", rmssdPost: "",
+  leftFootPre: Array(12).fill(false), leftFootPost: Array(12).fill(false),
+  rightFootPre: Array(12).fill(false), rightFootPost: Array(12).fill(false),
+  coinQuarterPre: "", coinQuarterPost: "",
+  coinDimePre: "", coinDimePost: "",
+  coinPennyPre: "", coinPennyPost: "",
+  slsRightSecPre: "", slsRightSecPost: "",
+  slsRightFallPre: "No", slsRightFallPost: "No",
+  slsLeftSecPre: "", slsLeftSecPost: "",
+  slsLeftFallPre: "No", slsLeftFallPost: "No",
+  walkTimePre: "", walkTimePost: "",
+  notes: "",
+};
 
 function App() {
   const [form, setForm] = useState(defaultState);
   const [records, setRecords] = useState([]);
+  const [photos, setPhotos] = useState([]);
+  const [drafts, setDrafts] = useState({});
   const [view, setView] = useState("form");
+  const [formSection, setFormSection] = useState("intake"); // intake | sensory
   const [msg, setMsg] = useState({ text: "", type: "" });
   const [submitting, setSubmitting] = useState(false);
   const [sheetUrl, setSheetUrl] = useState("");
   const [showConfig, setShowConfig] = useState(false);
+  const [photoPatientId, setPhotoPatientId] = useState("");
+  const [directory, setDirectory] = useState([]);
+  const [dirName, setDirName] = useState("");
+  const [dirId, setDirId] = useState("");
+  const [dirSearch, setDirSearch] = useState("");
 
-  useEffect(() => {
-    try {
-      const r = storage.get(STORAGE_KEY);
-      if (r?.value) setRecords(JSON.parse(r.value));
-    } catch (e) {}
-    try {
-      const u = storage.get(SHEET_URL_KEY);
-      if (u?.value) setSheetUrl(u.value);
-    } catch (e) {}
+  useEffect(function() {
+    try { var r = storage.get(STORAGE_KEY); if (r && r.value) setRecords(JSON.parse(r.value)); } catch(e) {}
+    try { var u = storage.get(SHEET_URL_KEY); if (u && u.value) setSheetUrl(u.value); } catch(e) {}
+    try { var p = storage.get(PHOTOS_KEY); if (p && p.value) setPhotos(JSON.parse(p.value)); } catch(e) {}
+    try { var d = storage.get(DRAFTS_KEY); if (d && d.value) setDrafts(JSON.parse(d.value)); } catch(e) {}
+    try { var dir = storage.get(DIRECTORY_KEY); if (dir && dir.value) setDirectory(JSON.parse(dir.value)); } catch(e) {}
   }, []);
 
-  function flash(text, type = "ok") {
-    setMsg({ text, type });
-    setTimeout(() => setMsg({ text: "", type: "" }), 3000);
+  function flash(text, type) { setMsg({text:text, type:type||"ok"}); setTimeout(function(){setMsg({text:"",type:""})}, 3000); }
+  function set(key, val) { setForm(function(f) { var n = Object.assign({}, f); n[key] = val; return n; }); }
+  function toggleSite(key, idx) { setForm(function(f) { var n = Object.assign({}, f); var a = n[key].slice(); a[idx] = !a[idx]; n[key] = a; return n; }); }
+  function toggleMulti(key, val) { setForm(function(f) { var n = Object.assign({}, f); n[key] = toggleInArray(f[key], val); return n; }); }
+
+  // Draft save/load
+  function saveDraft() {
+    if (!form.patientId) { flash("Enter Patient ID", "err"); return; }
+    var updated = Object.assign({}, drafts);
+    updated[form.patientId] = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    setDrafts(updated);
+    storage.set(DRAFTS_KEY, JSON.stringify(updated));
+    flash("Draft saved for " + form.patientId);
   }
 
-  function set(key, val) { setForm(f => ({ ...f, [key]: val })); }
-
-  function toggleSite(key, idx) {
-    setForm(f => {
-      const arr = [...f[key]];
-      arr[idx] = !arr[idx];
-      return { ...f, [key]: arr };
+  function loadDraft() {
+    if (!form.patientId) { flash("Enter Patient ID to load", "err"); return; }
+    var d = drafts[form.patientId];
+    if (!d) { flash("No draft found for " + form.patientId, "warn"); return; }
+    // Load intake + device data, clear sensory fields for fresh assessment
+    var loaded = Object.assign({}, d, {
+      date: new Date().toISOString().split("T")[0],
+      nrsPainPre: "", nrsPainPost: "",
+      rmssdPre: "", rmssdPost: "",
+      leftFootPre: Array(12).fill(false), leftFootPost: Array(12).fill(false),
+      rightFootPre: Array(12).fill(false), rightFootPost: Array(12).fill(false),
+      coinQuarterPre: "", coinQuarterPost: "",
+      coinDimePre: "", coinDimePost: "",
+      coinPennyPre: "", coinPennyPost: "",
+      slsRightSecPre: "", slsRightSecPost: "",
+      slsRightFallPre: "No", slsRightFallPost: "No",
+      slsLeftSecPre: "", slsLeftSecPost: "",
+      slsLeftFallPre: "No", slsLeftFallPost: "No",
+      walkTimePre: "", walkTimePost: "",
+      notes: "",
     });
+    setForm(loaded);
+    flash("Loaded " + form.patientId + " - sensory fields cleared for new assessment");
   }
 
+  function getDraftList() { return Object.keys(drafts); }
+
+  // Photo functions
+  function capturePhoto(photoType) {
+    var pid = photoPatientId || form.patientId;
+    if (!pid) { flash("Enter a Patient ID first", "err"); return; }
+    var input = document.createElement("input");
+    input.type = "file"; input.accept = "image/*"; input.capture = "environment";
+    input.onchange = function(e) {
+      var file = e.target.files[0]; if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        var img = new Image();
+        img.onload = function() {
+          var canvas = document.createElement("canvas");
+          var maxDim = 1200; var w = img.width; var h = img.height;
+          if (w > maxDim || h > maxDim) { if (w > h) { h = h*maxDim/w; w = maxDim; } else { w = w*maxDim/h; h = maxDim; } }
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          var compressed = canvas.toDataURL("image/jpeg", 0.7);
+          var newPhoto = { id: Date.now(), patientId: pid, type: photoType, timestamp: new Date().toISOString(), data: compressed };
+          var updated = photos.concat([newPhoto]);
+          setPhotos(updated);
+          try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
+          var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
+          flash((matched ? matched.label : photoType) + " captured");
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }
+
+  function deletePhoto(id) {
+    if (!confirm("Delete this photo?")) return;
+    var updated = photos.filter(function(p){return p.id !== id});
+    setPhotos(updated); storage.set(PHOTOS_KEY, JSON.stringify(updated));
+  }
+
+  function getPhotosForPatient(pid) { return photos.filter(function(p){return p.patientId === pid}); }
+
+  // Build data row
   function buildRow() {
-    const lPre = sumChecked(form.leftFootPre);
-    const rPre = sumChecked(form.rightFootPre);
-    const lPost = sumChecked(form.leftFootPost);
-    const rPost = sumChecked(form.rightFootPost);
+    var lPre=sumChecked(form.leftFootPre), rPre=sumChecked(form.rightFootPre);
+    var lPost=sumChecked(form.leftFootPost), rPost=sumChecked(form.rightFootPost);
     return {
-      patientId: form.patientId, date: form.date, visitType: form.visitType,
-      age: form.age, sex: form.sex, diabetesType: form.diabetesType, diabetesDuration: form.diabetesDuration,
-      nrsPainPre: form.nrsPainPre, nrsPainPost: form.nrsPainPost,
-      rmssdPre: form.rmssdPre, rmssdPost: form.rmssdPost,
-      leftFootPre: lPre, leftFootPost: lPost, rightFootPre: rPre, rightFootPost: rPost,
-      combinedPre: lPre + rPre, combinedPost: lPost + rPost,
-      monofilamentChange: (lPost + rPost) - (lPre + rPre),
-      coinQuarterPre: form.coinQuarterPre, coinQuarterPost: form.coinQuarterPost,
-      coinDimePre: form.coinDimePre, coinDimePost: form.coinDimePost,
-      coinPennyPre: form.coinPennyPre, coinPennyPost: form.coinPennyPost,
-      coinScorePre: [form.coinQuarterPre, form.coinDimePre, form.coinPennyPre].filter(v => v === "Yes").length,
-      coinScorePost: [form.coinQuarterPost, form.coinDimePost, form.coinPennyPost].filter(v => v === "Yes").length,
-      slsRightSecPre: form.slsRightSecPre, slsRightSecPost: form.slsRightSecPost,
-      slsRightFallPre: form.slsRightFallPre, slsRightFallPost: form.slsRightFallPost,
-      slsLeftSecPre: form.slsLeftSecPre, slsLeftSecPost: form.slsLeftSecPost,
-      slsLeftFallPre: form.slsLeftFallPre, slsLeftFallPost: form.slsLeftFallPost,
-      walkTimePre: form.walkTimePre, walkTimePost: form.walkTimePost,
-      notes: form.notes,
+      patientId:form.patientId, date:form.date, visitType:form.visitType,
+      age:form.age, sex:form.sex, diabetesType:form.diabetesType, diabetesDuration:form.diabetesDuration,
+      referringProvider:form.referringProvider, a1c:form.a1c,
+      pmhx:form.pmhx.join("; "), medications:form.medications, priorTx:form.priorTx.join("; "),
+      painDescriptors:form.painDescriptors.join("; "),
+      painNotes:form.painNotes, functionalNotes:form.functionalNotes,
+      pmhxNotes:form.pmhxNotes, txNotes:form.txNotes,
+      socialNotes:form.socialNotes, labNotes:form.labNotes,
+      painRest:form.painRest, painBest:form.painBest, painWorst:form.painWorst,
+      glucoseControl:form.glucoseControl,
+      trigeminalOhms:form.trigeminalOhms, trigeminalHz:form.trigeminalHz,
+      c2Ohms:form.c2Ohms, c2Hz:form.c2Hz,
+      vagusOhms:form.vagusOhms, vagusHz:form.vagusHz,
+      deviceNotes:form.deviceNotes,
+      nrsPainPre:form.nrsPainPre, nrsPainPost:form.nrsPainPost,
+      rmssdPre:form.rmssdPre, rmssdPost:form.rmssdPost,
+      leftFootPre:lPre, leftFootPost:lPost, rightFootPre:rPre, rightFootPost:rPost,
+      combinedPre:lPre+rPre, combinedPost:lPost+rPost, monofilamentChange:(lPost+rPost)-(lPre+rPre),
+      coinQuarterPre:form.coinQuarterPre, coinQuarterPost:form.coinQuarterPost,
+      coinDimePre:form.coinDimePre, coinDimePost:form.coinDimePost,
+      coinPennyPre:form.coinPennyPre, coinPennyPost:form.coinPennyPost,
+      coinScorePre:[form.coinQuarterPre,form.coinDimePre,form.coinPennyPre].filter(function(v){return v==="Yes"}).length,
+      coinScorePost:[form.coinQuarterPost,form.coinDimePost,form.coinPennyPost].filter(function(v){return v==="Yes"}).length,
+      slsRightSecPre:form.slsRightSecPre, slsRightSecPost:form.slsRightSecPost,
+      slsRightFallPre:form.slsRightFallPre, slsRightFallPost:form.slsRightFallPost,
+      slsLeftSecPre:form.slsLeftSecPre, slsLeftSecPost:form.slsLeftSecPost,
+      slsLeftFallPre:form.slsLeftFallPre, slsLeftFallPost:form.slsLeftFallPost,
+      walkTimePre:form.walkTimePre, walkTimePost:form.walkTimePost,
+      notes:form.notes,
     };
   }
 
+  // Generate clinical note
   function generateNote() {
-    const lPre = sumChecked(form.leftFootPre), rPre = sumChecked(form.rightFootPre);
-    const lPost = sumChecked(form.leftFootPost), rPost = sumChecked(form.rightFootPost);
-    const coinStr = (q, d, p) => {
-      const items = [q === "Yes" ? "quarter \u2713" : "quarter \u2717", d === "Yes" ? "dime \u2713" : "dime \u2717", p === "Yes" ? "penny \u2713" : "penny \u2717"];
-      return items.join(", ") + ` (${[q,d,p].filter(v => v === "Yes").length}/3)`;
+    var lPre=sumChecked(form.leftFootPre), rPre=sumChecked(form.rightFootPre);
+    var lPost=sumChecked(form.leftFootPost), rPost=sumChecked(form.rightFootPost);
+    var coinStr = function(q,d,p) {
+      var items = [q==="Yes"?"quarter +":"quarter -", d==="Yes"?"dime +":"dime -", p==="Yes"?"penny +":"penny -"];
+      return items.join(", ") + " (" + [q,d,p].filter(function(v){return v==="Yes"}).length + "/3)";
     };
-    const delta = (a, b) => a && b ? (parseFloat(b) - parseFloat(a)).toFixed(1) : "---";
-    const coinPre = [form.coinQuarterPre, form.coinDimePre, form.coinPennyPre].filter(v => v === "Yes").length;
-    const coinPost = [form.coinQuarterPost, form.coinDimePost, form.coinPennyPost].filter(v => v === "Yes").length;
+    var delta = function(a,b) { return a&&b ? (parseFloat(b)-parseFloat(a)).toFixed(1) : "---"; };
+    var coinPre=[form.coinQuarterPre,form.coinDimePre,form.coinPennyPre].filter(function(v){return v==="Yes"}).length;
+    var coinPost=[form.coinQuarterPost,form.coinDimePost,form.coinPennyPost].filter(function(v){return v==="Yes"}).length;
 
-    return `AURICULAR VNS SENSORY ASSESSMENT - ${form.visitType}
-Date: ${form.date} | Patient: ${form.patientId || "[ID]"} | Age: ${form.age} | Sex: ${form.sex}
-Diabetes: ${form.diabetesType}, ${form.diabetesDuration} yrs
+    return "AURICULAR VNS EVALUATION AND SENSORY ASSESSMENT - " + form.visitType + "\n" +
+"Date: " + form.date + " | Patient: " + (form.patientId||"[ID]") + " | Age: " + form.age + " | Sex: " + form.sex + "\n" +
+"Referring: " + (form.referringProvider||"N/A") + "\n\n" +
 
-PRE-ACTIVATION:
-  HRV (RMSSD): ${form.rmssdPre} ms | NRS Pain: ${form.nrsPainPre}/10
-  Monofilament: L ${lPre}/12, R ${rPre}/12, Combined ${lPre + rPre}/24
-  Stereognosis: ${coinStr(form.coinQuarterPre, form.coinDimePre, form.coinPennyPre)}
-  SLS eyes closed: R ${form.slsRightSecPre}s (fall: ${form.slsRightFallPre}), L ${form.slsLeftSecPre}s (fall: ${form.slsLeftFallPre}) | 10m walk: ${form.walkTimePre}s
+"CC: " + form.cc + "\n" +
+"Diabetes: " + form.diabetesType + ", " + form.diabetesDuration + " yrs | A1C: " + (form.a1c||"pending") + " | Glucose control: " + (form.glucoseControl||"N/A") + "\n\n" +
 
-POST-ACTIVATION (10 min):
-  HRV (RMSSD): ${form.rmssdPost} ms | NRS Pain: ${form.nrsPainPost}/10
-  Monofilament: L ${lPost}/12, R ${rPost}/12, Combined ${lPost + rPost}/24
-  Stereognosis: ${coinStr(form.coinQuarterPost, form.coinDimePost, form.coinPennyPost)}
-  SLS eyes closed: R ${form.slsRightSecPost}s (fall: ${form.slsRightFallPost}), L ${form.slsLeftSecPost}s (fall: ${form.slsLeftFallPost}) | 10m walk: ${form.walkTimePost}s
+"HPI: Pt is a " + form.age + " year old " + (form.sex==="M"?"male":"female") + " with " + form.diabetesType + " DM x " + form.diabetesDuration + " years presenting with chronic diabetic neuropathic pain.\n" +
+"Pain NRS: Rest " + form.painRest + "/10, Best " + form.painBest + "/10, Worst " + form.painWorst + "/10\n" +
+"Descriptors: " + (form.painDescriptors.length ? form.painDescriptors.join(", ") : "none selected") + (form.painNotes ? " | " + form.painNotes : "") + "\n" +
+"Functional: " + (form.functionalLimitations.length ? form.functionalLimitations.join(", ") : "none") + (form.functionalNotes ? " | " + form.functionalNotes : "") + "\n\n" +
 
-CHANGE: Mono ${(lPost+rPost)-(lPre+rPre) > 0 ? "+" : ""}${(lPost+rPost)-(lPre+rPre)} pts | Coins ${coinPre}/3 to ${coinPost}/3 | RMSSD ${delta(form.rmssdPre, form.rmssdPost)} ms | Pain ${delta(form.nrsPainPre, form.nrsPainPost)} pts
-${form.notes ? "\nNotes: " + form.notes : ""}`;
+"PMHx: " + (form.pmhx.length ? form.pmhx.join(", ") : "none") + (form.pmhxNotes ? " | " + form.pmhxNotes : "") + "\n" +
+"PSHx: " + (form.pshx || "none") + "\n" +
+"Allergies: " + (form.allergies.length ? form.allergies.join(", ") : "NKDA") + (form.allergiesOther ? ", " + form.allergiesOther : "") + "\n" +
+"Medications: " + (form.medications || "none listed") + "\n" +
+"Prior Tx: " + (form.priorTx.length ? form.priorTx.join(", ") : "none") + (form.txNotes ? " | " + form.txNotes : "") + "\n" +
+"Social: Tobacco " + form.socialTob + " | EtOH " + form.socialEtOH + " | Substances " + form.socialSubstance + (form.socialNotes ? " | " + form.socialNotes : "") + "\n" +
+(form.labNotes ? "Lab notes: " + form.labNotes + "\n" : "") +
+(form.trigeminalOhms || form.c2Ohms || form.vagusOhms ?
+"Device Impedance: Trigeminal " + form.trigeminalOhms + " ohms / " + form.trigeminalHz + " Hz | C2 " + form.c2Ohms + " ohms / " + form.c2Hz + " Hz | Vagus " + form.vagusOhms + " ohms / " + form.vagusHz + " Hz\n" : "") +
+(form.deviceNotes ? "Device notes: " + form.deviceNotes + "\n" : "") + "\n" +
+
+"PRE-ACTIVATION:\n" +
+"  HRV (RMSSD): " + form.rmssdPre + " ms | NRS Pain: " + form.nrsPainPre + "/10\n" +
+"  Monofilament: L " + lPre + "/12, R " + rPre + "/12, Combined " + (lPre+rPre) + "/24\n" +
+"  Stereognosis: " + coinStr(form.coinQuarterPre, form.coinDimePre, form.coinPennyPre) + "\n" +
+"  SLS eyes closed: R " + form.slsRightSecPre + "s (fall: " + form.slsRightFallPre + "), L " + form.slsLeftSecPre + "s (fall: " + form.slsLeftFallPre + ") | 10m walk: " + form.walkTimePre + "s\n\n" +
+
+"POST-ACTIVATION (10 min):\n" +
+"  HRV (RMSSD): " + form.rmssdPost + " ms | NRS Pain: " + form.nrsPainPost + "/10\n" +
+"  Monofilament: L " + lPost + "/12, R " + rPost + "/12, Combined " + (lPost+rPost) + "/24\n" +
+"  Stereognosis: " + coinStr(form.coinQuarterPost, form.coinDimePost, form.coinPennyPost) + "\n" +
+"  SLS eyes closed: R " + form.slsRightSecPost + "s (fall: " + form.slsRightFallPost + "), L " + form.slsLeftSecPost + "s (fall: " + form.slsLeftFallPost + ") | 10m walk: " + form.walkTimePost + "s\n\n" +
+
+"CHANGE: Mono " + ((lPost+rPost)-(lPre+rPre)>0?"+":"") + ((lPost+rPost)-(lPre+rPre)) + " pts | Coins " + coinPre + "/3 to " + coinPost + "/3 | RMSSD " + delta(form.rmssdPre,form.rmssdPost) + " ms | Pain " + delta(form.nrsPainPre,form.nrsPainPost) + " pts" +
+(form.notes ? "\n\nNotes: " + form.notes : "");
   }
 
   async function handleSubmit() {
     if (!form.patientId) { flash("Enter a Patient ID", "err"); return; }
     setSubmitting(true);
-    const row = buildRow();
-    const note = generateNote();
-    try { await navigator.clipboard.writeText(note); } catch (e) {}
-    const updated = [...records, { ...row, id: Date.now() }];
-    try { storage.set(STORAGE_KEY, JSON.stringify(updated)); setRecords(updated); } catch (e) {}
-    let sheetOk = false;
-    if (sheetUrl) {
-      try { await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(row) }); sheetOk = true; } catch (e) {}
-    }
+    var row = buildRow(); var note = generateNote();
+    try { await navigator.clipboard.writeText(note); } catch(e) {}
+    var updated = records.concat([Object.assign({}, row, { id: Date.now() })]);
+    try { storage.set(STORAGE_KEY, JSON.stringify(updated)); setRecords(updated); } catch(e) {}
+    // Update draft with latest intake/device data for future visits
+    var d = Object.assign({}, drafts);
+    d[form.patientId] = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    setDrafts(d);
+    try { storage.set(DRAFTS_KEY, JSON.stringify(d)); } catch(e) {}
+    var sheetOk = false;
+    if (sheetUrl) { try { await fetch(sheetUrl, {method:"POST", mode:"no-cors", body:JSON.stringify(row)}); sheetOk = true; } catch(e) {} }
     setSubmitting(false);
-    flash(`Note copied${sheetOk ? " + Sheet updated" : sheetUrl ? " (Sheet may have updated)" : ""}. Paste into chart.`, "ok");
+    flash("Note copied" + (sheetOk ? " + Sheet updated" : sheetUrl ? " (Sheet may have updated)" : "") + ". Paste into chart.", "ok");
   }
 
-  function saveSheetUrl() {
-    storage.set(SHEET_URL_KEY, sheetUrl);
-    flash("Sheet URL saved");
-    setShowConfig(false);
+  // Directory functions (local only, never exported)
+  function addToDirectory() {
+    if (!dirName || !dirId) { flash("Enter both name and ID", "err"); return; }
+    var entry = { name: dirName, id: dirId, addedAt: new Date().toISOString() };
+    var updated = directory.concat([entry]);
+    setDirectory(updated);
+    storage.set(DIRECTORY_KEY, JSON.stringify(updated));
+    setDirName(""); setDirId("");
+    flash("Added " + dirName + " as " + dirId);
   }
+
+  function removeFromDirectory(idx) {
+    var updated = directory.filter(function(_, i) { return i !== idx; });
+    setDirectory(updated);
+    storage.set(DIRECTORY_KEY, JSON.stringify(updated));
+  }
+
+  function selectFromDirectory(id) {
+    set("patientId", id);
+    setPhotoPatientId(id);
+    setShowConfig(false);
+    flash("Selected " + id);
+  }
+
+  function getFilteredDirectory() {
+    if (!dirSearch) return directory;
+    var s = dirSearch.toLowerCase();
+    return directory.filter(function(d) {
+      return d.name.toLowerCase().includes(s) || d.id.toLowerCase().includes(s);
+    });
+  }
+
+  function saveSheetUrl() { storage.set(SHEET_URL_KEY, sheetUrl); flash("Sheet URL saved"); setShowConfig(false); }
 
   function exportCSV() {
     if (!records.length) return;
-    const headers = Object.keys(records[0]).filter(k => k !== "id");
-    const csv = [headers.join(","), ...records.map(r => headers.map(h => `"${String(r[h] ?? "").replace(/"/g, '""')}"`).join(","))].join("\n");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    a.download = `dpn_data_${new Date().toISOString().split("T")[0]}.csv`; a.click();
+    var headers = Object.keys(records[0]).filter(function(k){return k!=="id"});
+    var csv = [headers.join(",")].concat(records.map(function(r){return headers.map(function(h){return '"'+String(r[h]||"").replace(/"/g,'""')+'"'}).join(",")})).join("\n");
+    var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+    a.download = "dpn_data_" + new Date().toISOString().split("T")[0] + ".csv"; a.click();
   }
 
-  function clearAll() {
-    if (confirm("Delete all saved records?")) { storage.delete(STORAGE_KEY); setRecords([]); }
+  function clearAll() { if(confirm("Delete all saved records?")){ storage.delete(STORAGE_KEY); setRecords([]); } }
+  function resetForm() { setForm(Object.assign({}, defaultState, { date: new Date().toISOString().split("T")[0] })); setFormSection("intake"); }
+
+  var ic = "w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400";
+  var lc = "block text-xs font-medium text-gray-600 mb-0.5";
+
+  // Chip toggle helper
+  function Chip(props) {
+    var active = props.selected;
+    return <button onClick={props.onClick}
+      className={"text-xs py-1 px-2 rounded-full border mr-1 mb-1 " + (active ? "bg-blue-500 text-white border-blue-500" : "bg-white text-gray-600 border-gray-300")}>
+      {props.label}
+    </button>;
   }
 
-  function resetForm() { setForm({ ...defaultState, date: new Date().toISOString().split("T")[0] }); }
-
-  const ic = "w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400";
-  const lc = "block text-xs font-medium text-gray-600 mb-0.5";
+  var draftList = getDraftList();
 
   return (
     <div className="max-w-lg mx-auto bg-white min-h-screen">
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
-        {[["form","Assess"],["note","Note"],["records","Data ("+records.length+")"]].map(([v,l]) => (
-          <button key={v} onClick={() => setView(v)} className={"flex-1 py-2.5 text-sm font-medium " + (view === v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>
-        ))}
-        <button onClick={() => setShowConfig(!showConfig)} className="px-3 py-2.5 text-gray-400 text-sm">{showConfig ? "\u2715" : "\u2699"}</button>
+        {[["form","Assess"],["photos","Photos"],["note","Note"],["records","Data ("+records.length+")"]].map(function(item) {
+          var v = item[0], l = item[1];
+          return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
+        })}
+        <button onClick={function(){setShowConfig(!showConfig)}} className="px-3 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
       </div>
 
       {showConfig && (
-        <div className="p-3 bg-yellow-50 border-b border-yellow-200">
-          <label className={lc}>Google Apps Script URL</label>
-          <input className={ic} value={sheetUrl} onChange={e => setSheetUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec" />
-          <button onClick={saveSheetUrl} className="mt-2 px-3 py-1 bg-yellow-500 text-white text-xs rounded">Save URL</button>
+        <div className="p-3 bg-yellow-50 border-b border-yellow-200 space-y-3">
+          <div>
+            <label className={lc}>Google Apps Script URL</label>
+            <input className={ic} value={sheetUrl} onChange={function(e){setSheetUrl(e.target.value)}} placeholder="https://script.google.com/macros/s/.../exec" />
+            <button onClick={saveSheetUrl} className="mt-2 px-3 py-1 bg-yellow-500 text-white text-xs rounded">Save URL</button>
+          </div>
+          <div className="border-t border-yellow-300 pt-3">
+            <div className="text-xs font-semibold text-gray-600 mb-2">PATIENT DIRECTORY (local only, never exported)</div>
+            <div className="flex gap-1 mb-2">
+              <input className={ic} value={dirName} onChange={function(e){setDirName(e.target.value)}} placeholder="Patient name" />
+              <input className={ic + " w-28"} value={dirId} onChange={function(e){setDirId(e.target.value)}} placeholder="DPN-001" />
+              <button onClick={addToDirectory} className="px-2 py-1 bg-blue-500 text-white text-xs rounded whitespace-nowrap">Add</button>
+            </div>
+            {directory.length > 0 && (
+              <div>
+                <input className={ic + " mb-2"} value={dirSearch} onChange={function(e){setDirSearch(e.target.value)}} placeholder="Search name or ID..." />
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {getFilteredDirectory().map(function(d, i) { return (
+                    <div key={i} className="flex justify-between items-center bg-white rounded px-2 py-1.5 border border-gray-200">
+                      <button onClick={function(){selectFromDirectory(d.id)}} className="text-xs text-left flex-1">
+                        <span className="font-medium text-gray-700">{d.name}</span>
+                        <span className="text-blue-500 ml-2">{d.id}</span>
+                      </button>
+                      <button onClick={function(){removeFromDirectory(i)}} className="text-red-400 text-xs ml-2">X</button>
+                    </div>
+                  );})}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {msg.text && (
-        <div className={"px-4 py-2 text-sm font-medium " + (msg.type === "err" ? "bg-red-50 text-red-600" : msg.type === "warn" ? "bg-yellow-50 text-yellow-700" : "bg-green-50 text-green-600")}>{msg.text}</div>
+        <div className={"px-4 py-2 text-sm font-medium " + (msg.type==="err" ? "bg-red-50 text-red-600" : msg.type==="warn" ? "bg-yellow-50 text-yellow-700" : "bg-green-50 text-green-600")}>{msg.text}</div>
       )}
 
+      {/* ========== ASSESS TAB ========== */}
       {view === "form" && (
         <div className="p-4 space-y-3">
+          {/* Patient ID + Load/Save Draft */}
           <div className="grid grid-cols-4 gap-2">
-            <div className="col-span-2"><label className={lc}>Patient ID</label><input className={ic} value={form.patientId} onChange={e => set("patientId", e.target.value)} placeholder="DPN-001" /></div>
-            <div><label className={lc}>Visit</label><select className={ic} value={form.visitType} onChange={e => set("visitType", e.target.value)}><option>T0</option><option>T1</option><option>T2</option><option>T3</option></select></div>
-            <div><label className={lc}>Date</label><input type="date" className={ic} value={form.date} onChange={e => set("date", e.target.value)} /></div>
-          </div>
-          <div className="grid grid-cols-4 gap-2">
-            <div><label className={lc}>Age</label><input className={ic} type="number" value={form.age} onChange={e => set("age", e.target.value)} /></div>
-            <div><label className={lc}>Sex</label><select className={ic} value={form.sex} onChange={e => set("sex", e.target.value)}><option value="">--</option><option>M</option><option>F</option></select></div>
-            <div><label className={lc}>DM Type</label><select className={ic} value={form.diabetesType} onChange={e => set("diabetesType", e.target.value)}><option>Type 1</option><option>Type 2</option></select></div>
-            <div><label className={lc}>DM Yrs</label><input className={ic} type="number" value={form.diabetesDuration} onChange={e => set("diabetesDuration", e.target.value)} /></div>
-          </div>
-
-          <div className="bg-gray-50 rounded p-3">
-            <div className="text-xs font-semibold text-gray-500 mb-2">HRV and PAIN</div>
-            <div className="grid grid-cols-2 gap-4">
-              {["Pre","Post"].map(ph => (
-                <div key={ph}>
-                  <div className="text-xs text-gray-400 mb-1">{ph.toUpperCase()}</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><label className={lc}>RMSSD</label><input className={ic} type="number" step="0.1" value={form["rmssd"+ph]} onChange={e => set("rmssd"+ph, e.target.value)} placeholder="ms" /></div>
-                    <div><label className={lc}>NRS Pain</label><input className={ic} type="number" min="0" max="10" value={form["nrsPain"+ph]} onChange={e => set("nrsPain"+ph, e.target.value)} placeholder="/10" /></div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {["Pre","Post"].map(phase => (
-            <div key={phase} className="bg-gray-50 rounded p-3">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-xs font-semibold text-gray-500">MONOFILAMENT {phase.toUpperCase()}</span>
-                <span className="text-sm font-bold text-blue-600">L: {sumChecked(form["leftFoot"+phase])}/12 | R: {sumChecked(form["rightFoot"+phase])}/12</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {["left","right"].map(side => (
-                  <div key={side}>
-                    <div className="text-xs text-gray-400 mb-1 capitalize">{side}</div>
-                    <div className="grid grid-cols-3 gap-1">
-                      {siteLabels.map((label, i) => {
-                        const key = side+"Foot"+phase;
-                        return (
-                          <button key={i} onClick={() => toggleSite(key, i)}
-                            className={"text-xs py-1 px-0.5 rounded border " + (form[key][i] ? "bg-blue-500 text-white border-blue-500" : "bg-white text-gray-500 border-gray-300")}>
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
+            <div className="col-span-2">
+              <label className={lc}>Patient ID</label>
+              <div className="flex gap-1">
+                <input className={ic} value={form.patientId} onChange={function(e){set("patientId",e.target.value)}} placeholder="DPN-001" />
+                <button onClick={loadDraft} className="px-2 py-1 bg-blue-100 text-blue-600 text-xs rounded whitespace-nowrap">Load</button>
               </div>
             </div>
-          ))}
-
-          <div className="bg-gray-50 rounded p-3">
-            <div className="text-xs font-semibold text-gray-500 mb-2">STEREOGNOSIS (0-3 per hand)</div>
-            <div className="grid grid-cols-2 gap-4">
-              {["Pre","Post"].map(ph => (
-                <div key={ph}>
-                  <div className="text-xs text-gray-400 mb-1">{ph.toUpperCase()}</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div><label className={lc}>Quarter</label><select className={ic} value={form["coinQuarter"+ph]} onChange={e => set("coinQuarter"+ph, e.target.value)}><option value="">--</option><option>Yes</option><option>No</option></select></div>
-                    <div><label className={lc}>Dime</label><select className={ic} value={form["coinDime"+ph]} onChange={e => set("coinDime"+ph, e.target.value)}><option value="">--</option><option>Yes</option><option>No</option></select></div>
-                    <div><label className={lc}>Penny</label><select className={ic} value={form["coinPenny"+ph]} onChange={e => set("coinPenny"+ph, e.target.value)}><option value="">--</option><option>Yes</option><option>No</option></select></div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <div><label className={lc}>Visit</label><select className={ic} value={form.visitType} onChange={function(e){set("visitType",e.target.value)}}><option>T0</option><option>T1</option><option>T2</option><option>T3</option></select></div>
+            <div><label className={lc}>Date</label><input type="date" className={ic} value={form.date} onChange={function(e){set("date",e.target.value)}} /></div>
           </div>
 
-          <div className="bg-gray-50 rounded p-3">
-            <div className="text-xs font-semibold text-gray-500 mb-2">SINGLE LEG STANCE (eyes closed, max 30s) and 10M WALK</div>
-            <div className="grid grid-cols-2 gap-4">
-              {["Pre","Post"].map(ph => (
-                <div key={ph}>
-                  <div className="text-xs text-gray-400 mb-1">{ph.toUpperCase()}</div>
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div><label className={lc}>R leg (s)</label><input className={ic} type="number" step="0.1" value={form["slsRightSec"+ph]} onChange={e => set("slsRightSec"+ph, e.target.value)} /></div>
-                      <div><label className={lc}>R fall?</label><select className={ic} value={form["slsRightFall"+ph]} onChange={e => set("slsRightFall"+ph, e.target.value)}><option>No</option><option>Yes</option></select></div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div><label className={lc}>L leg (s)</label><input className={ic} type="number" step="0.1" value={form["slsLeftSec"+ph]} onChange={e => set("slsLeftSec"+ph, e.target.value)} /></div>
-                      <div><label className={lc}>L fall?</label><select className={ic} value={form["slsLeftFall"+ph]} onChange={e => set("slsLeftFall"+ph, e.target.value)}><option>No</option><option>Yes</option></select></div>
-                    </div>
-                    <div><label className={lc}>10m walk (s)</label><input className={ic} type="number" step="0.1" value={form["walkTime"+ph]} onChange={e => set("walkTime"+ph, e.target.value)} /></div>
-                  </div>
-                </div>
-              ))}
-            </div>
+          {/* Saved drafts indicator */}
+          {draftList.length > 0 && (
+            <div className="text-xs text-gray-400">Drafts: {draftList.map(function(d){
+              return <button key={d} onClick={function(){set("patientId",d);}} className="text-blue-500 underline mr-2">{d}</button>;
+            })}</div>
+          )}
+
+          {/* Demographics */}
+          <div className="grid grid-cols-4 gap-2">
+            <div><label className={lc}>Age</label><input className={ic} type="number" value={form.age} onChange={function(e){set("age",e.target.value)}} /></div>
+            <div><label className={lc}>Sex</label><select className={ic} value={form.sex} onChange={function(e){set("sex",e.target.value)}}><option value="">--</option><option>M</option><option>F</option></select></div>
+            <div><label className={lc}>DM Type</label><select className={ic} value={form.diabetesType} onChange={function(e){set("diabetesType",e.target.value)}}><option>Type 1</option><option>Type 2</option></select></div>
+            <div><label className={lc}>DM Yrs</label><input className={ic} type="number" value={form.diabetesDuration} onChange={function(e){set("diabetesDuration",e.target.value)}} /></div>
           </div>
 
-          <div><label className={lc}>Notes</label><textarea className={ic + " h-14"} value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Meds, observations..."></textarea></div>
+          {/* Section toggle */}
+          <div className="flex rounded-lg overflow-hidden border border-gray-300">
+            <button onClick={function(){setFormSection("intake")}} className={"flex-1 py-2 text-sm font-medium " + (formSection==="intake" ? "bg-blue-600 text-white" : "bg-gray-50 text-gray-500")}>Intake / H&P</button>
+            <button onClick={function(){setFormSection("sensory")}} className={"flex-1 py-2 text-sm font-medium " + (formSection==="sensory" ? "bg-blue-600 text-white" : "bg-gray-50 text-gray-500")}>Sensory Assessment</button>
+          </div>
 
-          <button onClick={handleSubmit} disabled={submitting}
-            className={"w-full py-3 rounded-lg text-white font-semibold text-base " + (submitting ? "bg-gray-400" : "bg-blue-600 active:bg-blue-700")}>
-            {submitting ? "Submitting..." : "Submit: Copy Note + Save Data"}
-          </button>
-          <button onClick={resetForm} className="w-full py-2 text-sm text-gray-400">Clear form for next patient</button>
+          {/* ---- INTAKE SECTION ---- */}
+          {formSection === "intake" && (
+            <div className="space-y-3">
+              <div><label className={lc}>Referring Provider</label><input className={ic} value={form.referringProvider} onChange={function(e){set("referringProvider",e.target.value)}} placeholder="Dr. Smith" /></div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">PAIN</div>
+                <div className="grid grid-cols-3 gap-2 mb-2">
+                  <div><label className={lc}>Rest /10</label><input className={ic} type="number" min="0" max="10" value={form.painRest} onChange={function(e){set("painRest",e.target.value)}} /></div>
+                  <div><label className={lc}>Best /10</label><input className={ic} type="number" min="0" max="10" value={form.painBest} onChange={function(e){set("painBest",e.target.value)}} /></div>
+                  <div><label className={lc}>Worst /10</label><input className={ic} type="number" min="0" max="10" value={form.painWorst} onChange={function(e){set("painWorst",e.target.value)}} /></div>
+                </div>
+                <label className={lc}>Descriptors</label>
+                <div className="flex flex-wrap">{PAIN_DESC.map(function(d){return <Chip key={d} label={d} selected={form.painDescriptors.includes(d)} onClick={function(){toggleMulti("painDescriptors",d)}} />;})}</div>
+                <input className={ic + " mt-1"} value={form.painNotes} onChange={function(e){set("painNotes",e.target.value)}} placeholder="Additional pain notes..." />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <label className={lc}>Functional Limitations</label>
+                <div className="flex flex-wrap">{FUNCTIONAL.map(function(d){return <Chip key={d} label={d} selected={form.functionalLimitations.includes(d)} onClick={function(){toggleMulti("functionalLimitations",d)}} />;})}</div>
+                <input className={ic + " mt-1"} value={form.functionalNotes} onChange={function(e){set("functionalNotes",e.target.value)}} placeholder="Additional functional notes..." />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <label className={lc}>PMHx</label>
+                <div className="flex flex-wrap">{PMHX_OPTIONS.map(function(d){return <Chip key={d} label={d} selected={form.pmhx.includes(d)} onClick={function(){toggleMulti("pmhx",d)}} />;})}</div>
+                <label className={lc + " mt-2"}>PSHx</label>
+                <input className={ic} value={form.pshx} onChange={function(e){set("pshx",e.target.value)}} placeholder="Surgical history" />
+                <input className={ic + " mt-1"} value={form.pmhxNotes} onChange={function(e){set("pmhxNotes",e.target.value)}} placeholder="Additional PMHx notes..." />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <label className={lc}>Allergies</label>
+                <div className="flex flex-wrap">{ALLERGY_COMMON.map(function(d){return <Chip key={d} label={d} selected={form.allergies.includes(d)} onClick={function(){toggleMulti("allergies",d)}} />;})}</div>
+                <input className={ic + " mt-1"} value={form.allergiesOther} onChange={function(e){set("allergiesOther",e.target.value)}} placeholder="Other allergies" />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <label className={lc}>Medications (current)</label>
+                <textarea className={ic + " h-14"} value={form.medications} onChange={function(e){set("medications",e.target.value)}} placeholder="List current medications"></textarea>
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <label className={lc}>Prior Therapies Tried</label>
+                <div className="flex flex-wrap">{PRIOR_TX.map(function(d){return <Chip key={d} label={d} selected={form.priorTx.includes(d)} onClick={function(){toggleMulti("priorTx",d)}} />;})}</div>
+                <input className={ic + " mt-1"} value={form.txNotes} onChange={function(e){set("txNotes",e.target.value)}} placeholder="Additional therapy notes, results..." />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">SOCIAL HX</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div><label className={lc}>Tobacco</label><select className={ic} value={form.socialTob} onChange={function(e){set("socialTob",e.target.value)}}><option>No</option><option>Current</option><option>Former</option></select></div>
+                  <div><label className={lc}>EtOH</label><select className={ic} value={form.socialEtOH} onChange={function(e){set("socialEtOH",e.target.value)}}><option>No</option><option>Social</option><option>Daily</option><option>Former</option></select></div>
+                  <div><label className={lc}>Substances</label><select className={ic} value={form.socialSubstance} onChange={function(e){set("socialSubstance",e.target.value)}}><option>No</option><option>Current</option><option>Former</option></select></div>
+                </div>
+                <input className={ic + " mt-1"} value={form.socialNotes} onChange={function(e){set("socialNotes",e.target.value)}} placeholder="Additional social hx notes..." />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">LABS</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div><label className={lc}>A1C</label><input className={ic} value={form.a1c} onChange={function(e){set("a1c",e.target.value)}} placeholder="%" /></div>
+                  <div><label className={lc}>Fasting BG</label><input className={ic} value={form.bgFasting} onChange={function(e){set("bgFasting",e.target.value)}} placeholder="mg/dL" /></div>
+                  <div><label className={lc}>BG Control</label><select className={ic} value={form.glucoseControl} onChange={function(e){set("glucoseControl",e.target.value)}}><option value="">--</option><option>Well controlled</option><option>Poorly controlled</option></select></div>
+                </div>
+                <input className={ic + " mt-1"} value={form.labNotes} onChange={function(e){set("labNotes",e.target.value)}} placeholder="Additional lab notes..." />
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">DEVICE IMPEDANCE (at placement)</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="text-xs font-medium text-gray-500 text-center">Trigeminal</div>
+                  <div className="text-xs font-medium text-gray-500 text-center">C2</div>
+                  <div className="text-xs font-medium text-gray-500 text-center">Vagus</div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-1">
+                  <div><label className={lc}>Ohms</label><input className={ic} value={form.trigeminalOhms} onChange={function(e){set("trigeminalOhms",e.target.value)}} placeholder="325-350" /></div>
+                  <div><label className={lc}>Ohms</label><input className={ic} value={form.c2Ohms} onChange={function(e){set("c2Ohms",e.target.value)}} placeholder="350-360" /></div>
+                  <div><label className={lc}>Ohms</label><input className={ic} value={form.vagusOhms} onChange={function(e){set("vagusOhms",e.target.value)}} placeholder="~400" /></div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-1">
+                  <div><label className={lc}>Hz</label><input className={ic} value={form.trigeminalHz} onChange={function(e){set("trigeminalHz",e.target.value)}} placeholder="9.12" /></div>
+                  <div><label className={lc}>Hz</label><input className={ic} value={form.c2Hz} onChange={function(e){set("c2Hz",e.target.value)}} placeholder="36.48" /></div>
+                  <div><label className={lc}>Hz</label><input className={ic} value={form.vagusHz} onChange={function(e){set("vagusHz",e.target.value)}} placeholder="72.96" /></div>
+                </div>
+                <input className={ic + " mt-1"} value={form.deviceNotes} onChange={function(e){set("deviceNotes",e.target.value)}} placeholder="Device serial, lot, placement notes..." />
+              </div>
+
+              <div className="flex gap-2">
+                <button onClick={saveDraft} className="flex-1 py-2.5 bg-yellow-500 text-white rounded-lg text-sm font-medium">Save Draft (phone intake)</button>
+                <button onClick={function(){setFormSection("sensory")}} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">Continue to Sensory</button>
+              </div>
+            </div>
+          )}
+
+          {/* ---- SENSORY ASSESSMENT SECTION ---- */}
+          {formSection === "sensory" && (
+            <div className="space-y-3">
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">HRV and PAIN</div>
+                <div className="grid grid-cols-2 gap-4">
+                  {["Pre","Post"].map(function(ph) { return (
+                    <div key={ph}>
+                      <div className="text-xs text-gray-400 mb-1">{ph.toUpperCase()}</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><label className={lc}>RMSSD</label><input className={ic} type="number" step="0.1" value={form["rmssd"+ph]} onChange={function(e){set("rmssd"+ph,e.target.value)}} placeholder="ms" /></div>
+                        <div><label className={lc}>NRS Pain</label><input className={ic} type="number" min="0" max="10" value={form["nrsPain"+ph]} onChange={function(e){set("nrsPain"+ph,e.target.value)}} placeholder="/10" /></div>
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              </div>
+
+              {["Pre","Post"].map(function(phase) { return (
+                <div key={phase} className="bg-gray-50 rounded p-3">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-xs font-semibold text-gray-500">MONOFILAMENT {phase.toUpperCase()}</span>
+                    <span className="text-sm font-bold text-blue-600">L: {sumChecked(form["leftFoot"+phase])}/12 | R: {sumChecked(form["rightFoot"+phase])}/12</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {["left","right"].map(function(side) { return (
+                      <div key={side}>
+                        <div className="text-xs text-gray-400 mb-1 capitalize">{side}</div>
+                        <div className="grid grid-cols-3 gap-1">
+                          {siteLabels.map(function(label, i) {
+                            var key = side+"Foot"+phase;
+                            return <button key={i} onClick={function(){toggleSite(key,i)}}
+                              className={"text-xs py-1 px-0.5 rounded border " + (form[key][i] ? "bg-blue-500 text-white border-blue-500" : "bg-white text-gray-500 border-gray-300")}>{label}</button>;
+                          })}
+                        </div>
+                      </div>
+                    );})}
+                  </div>
+                </div>
+              );})}
+
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">STEREOGNOSIS (0-3 per hand)</div>
+                <div className="grid grid-cols-2 gap-4">
+                  {["Pre","Post"].map(function(ph) { return (
+                    <div key={ph}>
+                      <div className="text-xs text-gray-400 mb-1">{ph.toUpperCase()}</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div><label className={lc}>Quarter</label><select className={ic} value={form["coinQuarter"+ph]} onChange={function(e){set("coinQuarter"+ph,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
+                        <div><label className={lc}>Dime</label><select className={ic} value={form["coinDime"+ph]} onChange={function(e){set("coinDime"+ph,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
+                        <div><label className={lc}>Penny</label><select className={ic} value={form["coinPenny"+ph]} onChange={function(e){set("coinPenny"+ph,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 rounded p-3">
+                <div className="text-xs font-semibold text-gray-500 mb-2">SINGLE LEG STANCE (eyes closed, max 30s) and 10M WALK</div>
+                <div className="grid grid-cols-2 gap-4">
+                  {["Pre","Post"].map(function(ph) { return (
+                    <div key={ph}>
+                      <div className="text-xs text-gray-400 mb-1">{ph.toUpperCase()}</div>
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div><label className={lc}>R leg (s)</label><input className={ic} type="number" step="0.1" value={form["slsRightSec"+ph]} onChange={function(e){set("slsRightSec"+ph,e.target.value)}} /></div>
+                          <div><label className={lc}>R fall?</label><select className={ic} value={form["slsRightFall"+ph]} onChange={function(e){set("slsRightFall"+ph,e.target.value)}}><option>No</option><option>Yes</option></select></div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div><label className={lc}>L leg (s)</label><input className={ic} type="number" step="0.1" value={form["slsLeftSec"+ph]} onChange={function(e){set("slsLeftSec"+ph,e.target.value)}} /></div>
+                          <div><label className={lc}>L fall?</label><select className={ic} value={form["slsLeftFall"+ph]} onChange={function(e){set("slsLeftFall"+ph,e.target.value)}}><option>No</option><option>Yes</option></select></div>
+                        </div>
+                        <div><label className={lc}>10m walk (s)</label><input className={ic} type="number" step="0.1" value={form["walkTime"+ph]} onChange={function(e){set("walkTime"+ph,e.target.value)}} /></div>
+                      </div>
+                    </div>
+                  );})}
+                </div>
+              </div>
+
+              <div><label className={lc}>Notes</label><textarea className={ic + " h-14"} value={form.notes} onChange={function(e){set("notes",e.target.value)}} placeholder="Meds, observations..."></textarea></div>
+
+              <button onClick={handleSubmit} disabled={submitting}
+                className={"w-full py-3 rounded-lg text-white font-semibold text-base " + (submitting ? "bg-gray-400" : "bg-blue-600 active:bg-blue-700")}>
+                {submitting ? "Submitting..." : "Submit: Copy Note + Save Data"}
+              </button>
+              <div className="flex gap-2">
+                <button onClick={function(){setFormSection("intake")}} className="flex-1 py-2 text-sm text-gray-400">Back to Intake</button>
+                <button onClick={resetForm} className="flex-1 py-2 text-sm text-gray-400">Clear All</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
+      {/* ========== PHOTOS TAB ========== */}
+      {view === "photos" && (
+        <div className="p-4 space-y-3">
+          <div>
+            <label className={lc}>Patient ID for Photos</label>
+            <input className={ic} value={photoPatientId || form.patientId} onChange={function(e){setPhotoPatientId(e.target.value)}} placeholder="DPN-001" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {PHOTO_TYPES.map(function(t) { return (
+              <button key={t.key} onClick={function(){capturePhoto(t.key)}}
+                className="flex flex-col items-center justify-center py-3 bg-gray-50 rounded-lg border border-gray-200 active:bg-blue-50">
+                <span className="text-lg font-bold text-blue-500 mb-1">{t.icon}</span>
+                <span className="text-xs font-medium text-gray-600 text-center leading-tight">{t.label}</span>
+              </button>
+            );})}
+          </div>
+          {(function() {
+            var pid = photoPatientId || form.patientId;
+            var patientPhotos = pid ? getPhotosForPatient(pid) : [];
+            if (!pid) return <div className="text-center text-gray-400 text-sm py-4">Enter Patient ID above</div>;
+            if (!patientPhotos.length) return <div className="text-center text-gray-400 text-sm py-4">No photos for {pid}</div>;
+            return (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-gray-500">{patientPhotos.length} photos for {pid}</div>
+                {patientPhotos.map(function(p) { return (
+                  <div key={p.id} className="bg-gray-50 rounded-lg overflow-hidden border">
+                    <div className="flex justify-between items-center px-3 py-1.5">
+                      <span className="text-xs font-medium text-gray-600">
+                        {(PHOTO_TYPES.find(function(t){return t.key===p.type})||{}).icon} {(PHOTO_TYPES.find(function(t){return t.key===p.type})||{}).label}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400">{new Date(p.timestamp).toLocaleString()}</span>
+                        <button onClick={function(){deletePhoto(p.id)}} className="text-red-400 text-xs">X</button>
+                      </div>
+                    </div>
+                    <img src={p.data} className="w-full" alt={p.type} />
+                  </div>
+                );})}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ========== NOTE TAB ========== */}
       {view === "note" && (
         <div className="p-4">
           <pre className="text-xs font-mono bg-gray-50 p-4 rounded whitespace-pre-wrap border">{generateNote()}</pre>
-          <button onClick={() => { navigator.clipboard.writeText(generateNote()); flash("Copied"); }}
+          <button onClick={function(){ navigator.clipboard.writeText(generateNote()); flash("Copied"); }}
             className="mt-3 w-full py-2 bg-blue-600 text-white rounded text-sm font-medium">Copy Again</button>
         </div>
       )}
 
+      {/* ========== RECORDS TAB ========== */}
       {view === "records" && (
         <div className="p-4">
           <div className="flex justify-between items-center mb-3">
@@ -348,7 +696,7 @@ ${form.notes ? "\nNotes: " + form.notes : ""}`;
           </div>
           {!records.length ? <div className="text-center text-gray-400 py-8 text-sm">No records yet</div> : (
             <div className="space-y-2 max-h-96 overflow-y-auto">
-              {records.map((r, i) => (
+              {records.map(function(r, i) { return (
                 <div key={r.id || i} className="bg-gray-50 rounded p-3 text-xs">
                   <div className="flex justify-between"><span className="font-medium">{r.patientId}</span><span className="text-gray-400">{r.date} | {r.visitType}</span></div>
                   <div className="text-gray-600 mt-1">
@@ -357,7 +705,7 @@ ${form.notes ? "\nNotes: " + form.notes : ""}`;
                     RMSSD: {r.rmssdPre} &rarr; {r.rmssdPost} | Pain: {r.nrsPainPre} &rarr; {r.nrsPainPost}
                   </div>
                 </div>
-              ))}
+              );})}
             </div>
           )}
         </div>
