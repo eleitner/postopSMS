@@ -85,6 +85,9 @@ const defaultState = {
   notes: "",
   // Progress note fields (D20/D90)
   subjective: "", plan: "",
+  // D20 explant specific
+  subjectivePre: "", subjectivePost: "",
+  explantSiteClean: "Yes", explantInduration: "No", explantErythema: "No", explantTolerated: "Yes", explantComplication: "No", explantComplicationDetail: "", explantNotes: "",
 };
 
 function App() {
@@ -155,6 +158,8 @@ function App() {
       slsLeftFallPre: "No", slsLeftFallPost: "No",
       walkTimePre: "", walkTimePost: "",
       subjective: "", plan: "",
+      subjectivePre: "", subjectivePost: "",
+      explantSiteClean: "Yes", explantInduration: "No", explantErythema: "No", explantTolerated: "Yes", explantComplication: "No", explantComplicationDetail: "", explantNotes: "",
       notes: "",
     });
     setForm(loaded);
@@ -239,7 +244,12 @@ function App() {
       slsLeftSecPre:form.slsLeftSecPre, slsLeftSecPost:form.slsLeftSecPost,
       slsLeftFallPre:form.slsLeftFallPre, slsLeftFallPost:form.slsLeftFallPost,
       walkTimePre:form.walkTimePre, walkTimePost:form.walkTimePost,
-      subjective:form.subjective, plan:form.plan,
+      subjective:form.subjective, subjectivePre:form.subjectivePre, subjectivePost:form.subjectivePost,
+      explantSiteClean:form.explantSiteClean, explantInduration:form.explantInduration,
+      explantErythema:form.explantErythema, explantTolerated:form.explantTolerated,
+      explantComplication:form.explantComplication, explantComplicationDetail:form.explantComplicationDetail,
+      explantNotes:form.explantNotes,
+      plan:form.plan,
       notes:form.notes,
     };
   }
@@ -297,11 +307,17 @@ examBlock("POST-ACTIVATION (10 min)", false) + "\n" +
 (form.notes ? "\n\nNotes: " + form.notes : "");
     }
 
-    // D20: SOAP progress note with pre/post exam
+    // D20: SOAP progress note with pre/post exam and explant
     if (form.visitType === "D20") {
+      var explantNote = "Hands washed. Area cleaned and prepped. Device and electrodes explanted. " +
+        (form.explantComplication === "Yes" ?
+          "COMPLICATION: " + (form.explantComplicationDetail || "[Details not recorded]") :
+          "Site inspection: non-indurated, non-erythematous. Site clean. Procedure tolerated well without complication.") +
+        (form.explantNotes ? " " + form.explantNotes : "");
+
       return header +
-"SUBJECTIVE:\n" +
-(form.subjective || "[No subjective entered]") + "\n" +
+"SUBJECTIVE (PRE-EXPLANT):\n" +
+(form.subjectivePre || "[Not entered]") + "\n" +
 "Current Pain: Rest " + (form.nrsPainPre||"---") + "/10, Best " + (form.painBest||"---") + "/10, Worst " + (form.painWorst||"---") + "/10\n\n" +
 "RELEVANT HISTORY:\n" +
 "  " + form.diabetesType + " DM x " + form.diabetesDuration + " yrs | A1C: " + (form.a1c||"---") + "\n" +
@@ -310,7 +326,10 @@ examBlock("POST-ACTIVATION (10 min)", false) + "\n" +
 (form.trigeminalOhms ? "  Device (D0): Tri " + form.trigeminalOhms + "/" + form.trigeminalHz + "Hz | C2 " + form.c2Ohms + "/" + form.c2Hz + "Hz | Vagus " + form.vagusOhms + "/" + form.vagusHz + "Hz\n" : "") + "\n" +
 "OBJECTIVE:\n" +
 examBlock("PRE-EXPLANT", true) + "\n" +
+"EXPLANT PROCEDURE:\n" + explantNote + "\n\n" +
 examBlock("POST-EXPLANT", false) + "\n" +
+"SUBJECTIVE (POST-EXPLANT):\n" +
+(form.subjectivePost || "[Not entered]") + "\n\n" +
 "CHANGE: Mono " + ((lPost+rPost)-(lPre+rPre)>0?"+":"") + ((lPost+rPost)-(lPre+rPre)) + " pts | Coins " + coinPre + "/3 to " + coinPost + "/3 | RMSSD " + delta(form.rmssdPre,form.rmssdPost) + " ms | Pain " + delta(form.nrsPainPre,form.nrsPainPost) + " pts\n\n" +
 "PLAN:\n" + (form.plan || "[No plan entered]") +
 (form.notes ? "\n\nNotes: " + form.notes : "");
@@ -473,7 +492,8 @@ examBlock("EXAM", true) + "\n" +
   async function copyNoteWithPhotos() {
     var pid = form.patientId;
     var patientPhotos = pid ? getPhotosForPatient(pid) : [];
-    if (patientPhotos.length > 0) {
+    // Only include photos for D0
+    if (form.visitType === "D0" && patientPhotos.length > 0) {
       try {
         var html = generateNoteHtml();
         var blob = new Blob([html], { type: "text/html" });
@@ -484,11 +504,11 @@ examBlock("EXAM", true) + "\n" +
             "text/plain": textBlob
           })
         ]);
-        flash("Copied note + " + patientPhotos.length + " photos (paste into Word/Docs)");
+        flash("Copied note + " + patientPhotos.length + " photos");
         return;
       } catch(e) {}
     }
-    try { await navigator.clipboard.writeText(generateNote()); flash("Copied (text only)"); } catch(e) { flash("Copy failed", "err"); }
+    try { await navigator.clipboard.writeText(generateNote()); flash("Copied note"); } catch(e) { flash("Copy failed", "err"); }
   }
 
   function saveSheetUrl() { storage.set(SHEET_URL_KEY, sheetUrl); flash("Sheet URL saved"); setShowConfig(false); }
@@ -720,10 +740,21 @@ examBlock("EXAM", true) + "\n" +
                     </div>
                   </div>
 
-                  <div className="bg-gray-50 rounded p-3">
-                    <div className="text-xs font-semibold text-gray-500 mb-2">SUBJECTIVE</div>
-                    <textarea className={ic + " h-24"} value={form.subjective} onChange={function(e){set("subjective",e.target.value)}} placeholder="Patient reports... symptoms since last visit, changes in pain, function, sleep, etc."></textarea>
-                  </div>
+                  {/* D90: single subjective */}
+                  {form.visitType === "D90" && (
+                    <div className="bg-gray-50 rounded p-3">
+                      <div className="text-xs font-semibold text-gray-500 mb-2">SUBJECTIVE</div>
+                      <textarea className={ic + " h-24"} value={form.subjective} onChange={function(e){set("subjective",e.target.value)}} placeholder="Patient reports... symptoms since device removal, changes in pain, function, sleep..."></textarea>
+                    </div>
+                  )}
+
+                  {/* D20: pre-explant subjective */}
+                  {form.visitType === "D20" && (
+                    <div className="bg-gray-50 rounded p-3">
+                      <div className="text-xs font-semibold text-gray-500 mb-2">SUBJECTIVE (PRE-EXPLANT)</div>
+                      <textarea className={ic + " h-20"} value={form.subjectivePre} onChange={function(e){set("subjectivePre",e.target.value)}} placeholder="Patient reports over 20-day treatment period... pain changes, sensation improvements, function, sleep..."></textarea>
+                    </div>
+                  )}
 
                   <div className="bg-gray-50 rounded p-3">
                     <div className="text-xs font-semibold text-gray-500 mb-2">CURRENT PAIN</div>
@@ -733,6 +764,31 @@ examBlock("EXAM", true) + "\n" +
                       <div><label className={lc}>Worst /10</label><input className={ic} type="number" min="0" max="10" value={form.painWorst} onChange={function(e){set("painWorst",e.target.value)}} /></div>
                     </div>
                   </div>
+
+                  {/* D20: explant procedure note */}
+                  {form.visitType === "D20" && (
+                    <div className="bg-gray-50 rounded p-3">
+                      <div className="text-xs font-semibold text-gray-500 mb-2">EXPLANT PROCEDURE</div>
+                      <div className="space-y-2">
+                        <div>
+                          <label className={lc}>Complication</label>
+                          <select className={ic} value={form.explantComplication || "No"} onChange={function(e){set("explantComplication",e.target.value)}}><option>No</option><option>Yes</option></select>
+                        </div>
+                        {form.explantComplication === "Yes" && (
+                          <textarea className={ic + " h-20 border-red-300"} value={form.explantComplicationDetail || ""} onChange={function(e){set("explantComplicationDetail",e.target.value)}} placeholder="Describe: site findings (induration, erythema, infection, bleeding), patient symptoms, actions taken..."></textarea>
+                        )}
+                        <input className={ic} value={form.explantNotes} onChange={function(e){set("explantNotes",e.target.value)}} placeholder="Additional procedure notes..." />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* D20: post-explant subjective */}
+                  {form.visitType === "D20" && (
+                    <div className="bg-gray-50 rounded p-3">
+                      <div className="text-xs font-semibold text-gray-500 mb-2">SUBJECTIVE (POST-EXPLANT)</div>
+                      <textarea className={ic + " h-16"} value={form.subjectivePost} onChange={function(e){set("subjectivePost",e.target.value)}} placeholder="How patient feels after device removal..."></textarea>
+                    </div>
+                  )}
 
                   {form.visitType === "D20" && (
                     <div className="bg-gray-50 rounded p-3">
@@ -915,7 +971,7 @@ examBlock("EXAM", true) + "\n" +
       {view === "note" && (
         <div className="p-4">
           <pre className="text-xs font-mono bg-gray-50 p-4 rounded whitespace-pre-wrap border">{generateNote()}</pre>
-          {(function() {
+          {form.visitType === "D0" && (function() {
             var pid = form.patientId;
             var patientPhotos = pid ? getPhotosForPatient(pid) : [];
             if (!patientPhotos.length) return null;
@@ -932,7 +988,7 @@ examBlock("EXAM", true) + "\n" +
             );
           })()}
           <button onClick={tryCopy}
-            className="mt-3 w-full py-2 bg-blue-600 text-white rounded text-sm font-medium">Copy Note + Photos</button>
+            className="mt-3 w-full py-2 bg-blue-600 text-white rounded text-sm font-medium">{form.visitType === "D0" ? "Copy Note + Photos" : "Copy Note"}</button>
 
           {showOverride && validationErrors.length > 0 && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-2">
