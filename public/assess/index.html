@@ -280,11 +280,70 @@ function App() {
 (form.notes ? "\n\nNotes: " + form.notes : "");
   }
 
+  // Validation - check for missing required items
+  function getValidationErrors() {
+    var errors = [];
+    var pid = form.patientId;
+    if (!pid) return ["Patient ID required"];
+
+    var patientPhotos = pid ? getPhotosForPatient(pid) : [];
+    var photoTypes = patientPhotos.map(function(p) { return p.type; });
+
+    // Always required
+    if (photoTypes.indexOf("consent_procedure") === -1) errors.push("Missing: Procedure Consent photo");
+    if (photoTypes.indexOf("consent_data") === -1) errors.push("Missing: Data Use Consent photo");
+
+    // Required on T0 (placement visit)
+    if (form.visitType === "T0") {
+      if (photoTypes.indexOf("consent_social") === -1) errors.push("Missing: Social Media Consent photo");
+      if (photoTypes.indexOf("serial") === -1) errors.push("Missing: Device Serial / Lot photo");
+      if (photoTypes.indexOf("earmap") === -1) errors.push("Missing: Ear Map photo");
+      if (photoTypes.indexOf("earphoto") === -1) errors.push("Missing: Ear Photo");
+      if (!form.trigeminalOhms || !form.trigeminalHz) errors.push("Missing: Trigeminal impedance values");
+      if (!form.c2Ohms || !form.c2Hz) errors.push("Missing: C2 impedance values");
+      if (!form.vagusOhms || !form.vagusHz) errors.push("Missing: Vagus impedance values");
+    }
+
+    // T2 = explant day, want ear photo
+    if (form.visitType === "T2") {
+      if (photoTypes.indexOf("earphoto") === -1) errors.push("Missing: Ear Photo (explant)");
+    }
+
+    return errors;
+  }
+
+  const [showOverride, setShowOverride] = useState(false);
+  const [validationErrors, setValidationErrors] = useState([]);
+
+  function tryCopy() {
+    var errors = getValidationErrors();
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      setShowOverride(true);
+      return;
+    }
+    setShowOverride(false);
+    setValidationErrors([]);
+    copyNoteWithPhotos();
+  }
+
+  function trySubmit() {
+    var errors = getValidationErrors();
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      setShowOverride(true);
+      return;
+    }
+    setShowOverride(false);
+    setValidationErrors([]);
+    handleSubmit();
+  }
+
   async function handleSubmit() {
     if (!form.patientId) { flash("Enter a Patient ID", "err"); return; }
     setSubmitting(true);
-    var row = buildRow(); var note = generateNote();
-    try { await navigator.clipboard.writeText(note); } catch(e) {}
+    var row = buildRow();
+    try { await copyNoteWithPhotos(); } catch(e) {}
     var updated = records.concat([Object.assign({}, row, { id: Date.now() })]);
     try { storage.set(STORAGE_KEY, JSON.stringify(updated)); setRecords(updated); } catch(e) {}
     // Update draft with latest intake/device data for future visits
@@ -295,7 +354,7 @@ function App() {
     var sheetOk = false;
     if (sheetUrl) { try { await fetch(sheetUrl, {method:"POST", mode:"no-cors", body:JSON.stringify(row)}); sheetOk = true; } catch(e) {} }
     setSubmitting(false);
-    flash("Note copied" + (sheetOk ? " + Sheet updated" : sheetUrl ? " (Sheet may have updated)" : "") + ". Paste into chart.", "ok");
+    flash("Saved" + (sheetOk ? " + Sheet updated" : sheetUrl ? " (Sheet may have updated)" : "") + ". Paste into chart.", "ok");
   }
 
   // Directory functions (local only, never exported)
@@ -328,6 +387,43 @@ function App() {
     return directory.filter(function(d) {
       return d.name.toLowerCase().includes(s) || d.id.toLowerCase().includes(s);
     });
+  }
+
+  function generateNoteHtml() {
+    var text = generateNote();
+    var pid = form.patientId;
+    var patientPhotos = pid ? getPhotosForPatient(pid) : [];
+    var html = "<div style=\"font-family:Courier New,monospace;font-size:11px;white-space:pre-wrap;\">" + text.replace(/\n/g, "<br>") + "</div>";
+    if (patientPhotos.length) {
+      html += "<br><div style=\"font-family:Arial,sans-serif;font-size:11px;font-weight:bold;\">PHOTOS:</div>";
+      patientPhotos.forEach(function(p) {
+        var matched = PHOTO_TYPES.find(function(t){return t.key===p.type}) || {};
+        html += "<div style=\"font-family:Arial,sans-serif;font-size:10px;color:#666;margin-top:8px;\">" + (matched.label || p.type) + " - " + new Date(p.timestamp).toLocaleString() + "</div>";
+        html += "<img src=\"" + p.data + "\" style=\"max-width:400px;margin:4px 0 12px 0;\" />";
+      });
+    }
+    return html;
+  }
+
+  async function copyNoteWithPhotos() {
+    var pid = form.patientId;
+    var patientPhotos = pid ? getPhotosForPatient(pid) : [];
+    if (patientPhotos.length > 0) {
+      try {
+        var html = generateNoteHtml();
+        var blob = new Blob([html], { type: "text/html" });
+        var textBlob = new Blob([generateNote()], { type: "text/plain" });
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": blob,
+            "text/plain": textBlob
+          })
+        ]);
+        flash("Copied note + " + patientPhotos.length + " photos (paste into Word/Docs)");
+        return;
+      } catch(e) {}
+    }
+    try { await navigator.clipboard.writeText(generateNote()); flash("Copied (text only)"); } catch(e) { flash("Copy failed", "err"); }
   }
 
   function saveSheetUrl() { storage.set(SHEET_URL_KEY, sheetUrl); flash("Sheet URL saved"); setShowConfig(false); }
@@ -618,10 +714,19 @@ function App() {
 
               <div><label className={lc}>Notes</label><textarea className={ic + " h-14"} value={form.notes} onChange={function(e){set("notes",e.target.value)}} placeholder="Meds, observations..."></textarea></div>
 
-              <button onClick={handleSubmit} disabled={submitting}
+              <button onClick={trySubmit} disabled={submitting}
                 className={"w-full py-3 rounded-lg text-white font-semibold text-base " + (submitting ? "bg-gray-400" : "bg-blue-600 active:bg-blue-700")}>
                 {submitting ? "Submitting..." : "Submit: Copy Note + Save Data"}
               </button>
+
+              {showOverride && validationErrors.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-2">
+                  <div className="text-xs font-semibold text-red-600 mb-1">Cannot submit - missing items:</div>
+                  {validationErrors.map(function(err, i) { return <div key={i} className="text-xs text-red-500 py-0.5">{err}</div>; })}
+                  <button onClick={function(){ setShowOverride(false); setValidationErrors([]); handleSubmit(); }}
+                    className="mt-2 w-full py-1.5 bg-red-100 text-red-600 text-xs rounded font-medium">Override and Submit Anyway</button>
+                </div>
+              )}
               <div className="flex gap-2">
                 <button onClick={function(){setFormSection("intake")}} className="flex-1 py-2 text-sm text-gray-400">Back to Intake</button>
                 <button onClick={resetForm} className="flex-1 py-2 text-sm text-gray-400">Clear All</button>
@@ -679,8 +784,33 @@ function App() {
       {view === "note" && (
         <div className="p-4">
           <pre className="text-xs font-mono bg-gray-50 p-4 rounded whitespace-pre-wrap border">{generateNote()}</pre>
-          <button onClick={function(){ navigator.clipboard.writeText(generateNote()); flash("Copied"); }}
-            className="mt-3 w-full py-2 bg-blue-600 text-white rounded text-sm font-medium">Copy Again</button>
+          {(function() {
+            var pid = form.patientId;
+            var patientPhotos = pid ? getPhotosForPatient(pid) : [];
+            if (!patientPhotos.length) return null;
+            return (
+              <div className="mt-2 space-y-2">
+                <div className="text-xs font-semibold text-gray-500">PHOTOS ({patientPhotos.length})</div>
+                {patientPhotos.map(function(p) { return (
+                  <div key={p.id} className="bg-gray-50 rounded overflow-hidden border">
+                    <div className="px-2 py-1 text-xs text-gray-500">{(PHOTO_TYPES.find(function(t){return t.key===p.type})||{}).label}</div>
+                    <img src={p.data} className="w-full" alt={p.type} />
+                  </div>
+                );})}
+              </div>
+            );
+          })()}
+          <button onClick={tryCopy}
+            className="mt-3 w-full py-2 bg-blue-600 text-white rounded text-sm font-medium">Copy Note + Photos</button>
+
+          {showOverride && validationErrors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-2">
+              <div className="text-xs font-semibold text-red-600 mb-1">Missing items:</div>
+              {validationErrors.map(function(err, i) { return <div key={i} className="text-xs text-red-500 py-0.5">{err}</div>; })}
+              <button onClick={function(){ setShowOverride(false); setValidationErrors([]); copyNoteWithPhotos(); }}
+                className="mt-2 w-full py-1.5 bg-red-100 text-red-600 text-xs rounded font-medium">Copy Anyway</button>
+            </div>
+          )}
         </div>
       )}
 
