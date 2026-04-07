@@ -228,6 +228,41 @@ function App() {
     flash("Loaded referral for " + ref.name + " as " + id);
   }
 
+  async function parseReferralPhoto(base64Data) {
+    if (!sheetUrl) { flash("Set database URL first", "err"); return; }
+    flash("Parsing referral photo...");
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "parseReferralPhoto", imageData: base64Data })
+      });
+      var result = await resp.json();
+      if (result.status === "ok" && result.parsed) {
+        var p = result.parsed;
+        setNewRef({
+          name: p.name || "",
+          dob: p.dob || "",
+          phone: p.phone || "",
+          provider: p.provider || "",
+          notes: p.notes || ""
+        });
+        flash("Parsed! Review and tap Add Referral");
+      } else {
+        flash("Parse failed: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) { flash("Error: " + e.toString(), "err"); }
+  }
+
+  function handleReferralPhotoCapture(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      parseReferralPhoto(ev.target.result);
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function parseTranscript() {
     if (!transcript.trim()) { flash("Paste a transcript first", "err"); return; }
     if (!sheetUrl) { flash("Set Google Apps Script URL in settings first", "err"); return; }
@@ -875,6 +910,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           {role === "ma" && (
             <div className="bg-green-50 rounded p-3 border border-green-200 space-y-2">
               <div className="text-xs font-semibold text-green-700">NEW REFERRAL</div>
+              <label className="block w-full py-2 bg-blue-600 text-white rounded text-sm font-medium text-center cursor-pointer">
+                Snap Referral Sheet
+                <input type="file" accept="image/*" capture="environment" onChange={handleReferralPhotoCapture} className="hidden" />
+              </label>
+              <div className="text-xs text-gray-500 text-center">Or enter manually below</div>
               <input className={ic} value={newRef.name} onChange={function(e){setNewRef(Object.assign({}, newRef, {name:e.target.value}))}} placeholder="Patient name *" />
               <div className="grid grid-cols-2 gap-2">
                 <input className={ic} value={newRef.dob} onChange={function(e){setNewRef(Object.assign({}, newRef, {dob:e.target.value}))}} placeholder="DOB" />
