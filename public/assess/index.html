@@ -339,7 +339,7 @@ function App() {
   }
 
   async function loadDraft(optionalId) {
-    var pid = optionalId || form.patientId;
+    var pid = (typeof optionalId === "string" && optionalId) ? optionalId : form.patientId;
     if (!pid) { flash("Enter Study ID to load", "err"); return; }
     var draftData = null;
 
@@ -352,8 +352,12 @@ function App() {
         var result = await resp.json();
         if (result.status === "ok" && result.draft) {
           draftData = result.draft;
+        } else if (result.status === "not_found") {
+          flash("No cloud draft for " + pid, "warn");
+        } else {
+          flash("Cloud err: " + (result.message || result.status), "err");
         }
-      } catch(e) {}
+      } catch(e) { flash("Fetch failed: " + e.toString(), "err"); }
     }
 
     // Fall back to local
@@ -988,7 +992,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 <div className="flex gap-1">
                   <input className={ic} value={form.patientId} onChange={function(e){set("patientId",e.target.value)}} placeholder="DNC-XXXX" />
                   <button onClick={function(){set("patientId", generatePatientId())}} className="px-2 py-1 bg-gray-200 text-gray-600 text-xs rounded whitespace-nowrap">New</button>
-                  <button onClick={loadDraft} className="px-2 py-1 bg-blue-100 text-blue-600 text-xs rounded whitespace-nowrap">Load</button>
+                  <button onClick={function(){loadDraft()}} className="px-2 py-1 bg-blue-100 text-blue-600 text-xs rounded whitespace-nowrap">Load</button>
                 </div>
               </div>
               <div><label className={lc}>Visit</label><select className={ic} value={form.visitType} onChange={function(e){set("visitType",e.target.value)}}><option>D0</option><option>D20</option><option>D90</option></select></div>
