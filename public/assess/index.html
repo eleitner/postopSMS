@@ -54,7 +54,8 @@ const PHOTO_TYPES = [
   { key: "consent_procedure", label: "Procedure Consent", icon: "P" },
   { key: "consent_social", label: "Social Media Consent", icon: "S" },
   { key: "consent_data", label: "Data Use Consent", icon: "D" },
-  { key: "medicare", label: "Medicare Card", icon: "$" },
+  { key: "medicare", label: "Primary Insurance", icon: "$" },
+  { key: "medicare_secondary", label: "Secondary Insurance", icon: "$" },
   { key: "serial", label: "Device Serial / Lot", icon: "#" },
   { key: "earmap", label: "Ear Map", icon: "M" },
   { key: "earphoto", label: "Ear Photo", icon: "E" },
@@ -155,6 +156,7 @@ const defaultState = {
   // Insurance (parsed from Medicare card)
   insuranceName: "", memberId: "", groupNum: "", effectiveDate: "",
   insuredName: "",
+  insuranceName2: "", memberId2: "", groupNum2: "", effectiveDate2: "",
   // Device (parsed from device sticker)
   deviceSerial: "", deviceLot: "", timeImplanted: "",
   // Day-of-procedure subjective (added at D0 visit by clinician)
@@ -329,7 +331,7 @@ function App() {
     set("referringProvider", ref.provider || "");
     setPatientName(ref.name || "");
     var id = generatePatientId();
-    setForm(function(f) { return Object.assign({}, f, { patientId: id }); });
+    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake" }); });
     // Save to directory
     if (ref.name) {
       var d = directory.slice();
@@ -346,9 +348,9 @@ function App() {
     flash("Loaded referral for " + ref.name + " as " + id);
   }
 
-  async function parseMedicareCard(base64Data) {
+  async function parseMedicareCard(base64Data, isSecondary) {
     if (!sheetUrl) return;
-    flash("Parsing Medicare card...");
+    flash((isSecondary ? "Parsing secondary card..." : "Parsing primary card..."));
     try {
       var resp = await fetch(sheetUrl, {
         method: "POST",
@@ -357,16 +359,24 @@ function App() {
       var result = await resp.json();
       if (result.status === "ok" && result.parsed) {
         var p = result.parsed;
-        if (p.insuranceName) set("insuranceName", p.insuranceName);
-        if (p.memberId) set("memberId", p.memberId);
-        if (p.groupNum) set("groupNum", p.groupNum);
-        if (p.effectiveDate) set("effectiveDate", p.effectiveDate);
-        if (p.patientName && !patientName) setPatientName(p.patientName);
-        flash("Medicare card parsed");
+        var parts = [];
+        if (isSecondary) {
+          if (p.insuranceName) { set("insuranceName2", p.insuranceName); parts.push(p.insuranceName); }
+          if (p.memberId) { set("memberId2", p.memberId); parts.push(p.memberId); }
+          if (p.groupNum) { set("groupNum2", p.groupNum); parts.push("Grp " + p.groupNum); }
+          if (p.effectiveDate) set("effectiveDate2", p.effectiveDate);
+        } else {
+          if (p.insuranceName) { set("insuranceName", p.insuranceName); parts.push(p.insuranceName); }
+          if (p.memberId) { set("memberId", p.memberId); parts.push(p.memberId); }
+          if (p.groupNum) { set("groupNum", p.groupNum); parts.push("Grp " + p.groupNum); }
+          if (p.effectiveDate) set("effectiveDate", p.effectiveDate);
+          if (p.patientName && !patientName) setPatientName(p.patientName);
+        }
+        flash("Parsed: " + parts.join(" · ") + " (verify below, re-snap if wrong)", "ok");
       } else {
-        flash("Parse failed, enter manually", "warn");
+        flash("Parse failed - enter manually or re-snap clearer image", "warn");
       }
-    } catch(e) { flash("Parse error, enter manually", "warn"); }
+    } catch(e) { flash("Parse error - enter manually or re-snap", "warn"); }
   }
 
   async function parseDeviceSticker(base64Data) {
@@ -380,13 +390,14 @@ function App() {
       var result = await resp.json();
       if (result.status === "ok" && result.parsed) {
         var p = result.parsed;
-        if (p.serial) set("deviceSerial", p.serial);
-        if (p.lot) set("deviceLot", p.lot);
-        flash("Device sticker parsed");
+        var parts = [];
+        if (p.serial) { set("deviceSerial", p.serial); parts.push("SN " + p.serial); }
+        if (p.lot) { set("deviceLot", p.lot); parts.push("Lot " + p.lot); }
+        flash("Parsed: " + parts.join(" · ") + " (verify below, re-snap if wrong)", "ok");
       } else {
-        flash("Parse failed, enter manually", "warn");
+        flash("Parse failed - enter manually or re-snap", "warn");
       }
-    } catch(e) { flash("Parse error, enter manually", "warn"); }
+    } catch(e) { flash("Parse error - enter manually or re-snap", "warn"); }
   }
 
   async function parseReferralPhoto(base64Data) {
@@ -610,14 +621,18 @@ function App() {
           canvas.getContext("2d").drawImage(img, 0, 0, w, h);
           var compressed = canvas.toDataURL("image/jpeg", 0.7);
           var newPhoto = { id: Date.now(), patientId: pid, type: photoType, timestamp: new Date().toISOString(), data: compressed };
-          var updated = photos.concat([newPhoto]);
+          // Remove any existing photo of this type for this patient (re-capture overwrites)
+          var filtered = photos.filter(function(p){ return !(p.patientId === pid && p.type === photoType); });
+          var updated = filtered.concat([newPhoto]);
           setPhotos(updated);
           try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
           var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
           flash((matched ? matched.label : photoType) + " captured");
           // Auto-parse Medicare card and device sticker
           if (photoType === "medicare") {
-            parseMedicareCard(compressed);
+            parseMedicareCard(compressed, false);
+          } else if (photoType === "medicare_secondary") {
+            parseMedicareCard(compressed, true);
           } else if (photoType === "serial") {
             parseDeviceSticker(compressed);
           }
@@ -1139,10 +1154,17 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 "================================================================\n" +
 "BILL TO\n" +
 "================================================================\n" +
+"PRIMARY INSURANCE\n" +
 "Insurance Name:     " + (form.insuranceName || "") + "\n" +
 "Member ID:          " + (form.memberId || "") + "\n" +
 "Group #:            " + (form.groupNum || "") + "\n" +
 "Effective Date:     " + (form.effectiveDate || "") + "\n" +
+(form.insuranceName2 || form.memberId2 ?
+"\nSECONDARY INSURANCE\n" +
+"Insurance Name:     " + (form.insuranceName2 || "") + "\n" +
+"Member ID:          " + (form.memberId2 || "") + "\n" +
+"Group #:            " + (form.groupNum2 || "") + "\n" +
+"Effective Date:     " + (form.effectiveDate2 || "") + "\n" : "") +
 "\n" +
 "Date Implanted:     " + form.date + "\n" +
 "Time Implanted:     " + (form.timeImplanted || "") + "\n" +
@@ -1743,7 +1765,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   <button onClick={function(){loadDraft()}} className="px-2 py-1 bg-blue-100 text-blue-600 text-xs rounded whitespace-nowrap">Load</button>
                 </div>
               </div>
-              <div><label className={lc}>Visit</label><select className={ic} value={form.visitType} onChange={function(e){set("visitType",e.target.value)}}><option>D0</option><option>D20</option><option>D90</option></select></div>
+              <div><label className={lc}>Visit</label><select className={ic} value={form.visitType} onChange={function(e){set("visitType",e.target.value)}}><option>Phone Intake</option><option>D0</option><option>D20</option><option>D90</option></select></div>
               <div><label className={lc}>Date</label><input type="date" className={ic} value={form.date} onChange={function(e){set("date",e.target.value)}} /></div>
             </div>
           </div>
@@ -1765,7 +1787,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 
           {/* Section toggle */}
           <div className="flex rounded-lg overflow-hidden border border-gray-300">
-            <button onClick={function(){setFormSection("intake")}} className={"flex-1 py-2 text-sm font-medium " + (formSection==="intake" ? "bg-blue-600 text-white" : "bg-gray-50 text-gray-500")}>{form.visitType === "D0" ? "Intake / H&P" : "Progress Note"}</button>
+            <button onClick={function(){setFormSection("intake")}} className={"flex-1 py-2 text-sm font-medium " + (formSection==="intake" ? "bg-blue-600 text-white" : "bg-gray-50 text-gray-500")}>{form.visitType === "D0" ? "Intake / H&P" : form.visitType === "Phone Intake" ? "Phone Intake" : "Progress Note"}</button>
             <button onClick={function(){setFormSection("sensory")}} className={"flex-1 py-2 text-sm font-medium " + (formSection==="sensory" ? "bg-blue-600 text-white" : "bg-gray-50 text-gray-500")}>Sensory Assessment</button>
           </div>
 
@@ -1783,14 +1805,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 </button>
               </div>
 
-              {/* D0: Full intake */}
-              {form.visitType === "D0" && (
+              {/* Phone Intake + D0: Full intake history */}
+              {(form.visitType === "D0" || form.visitType === "Phone Intake") && (
                 <div className="space-y-3">
+                  {form.visitType === "D0" && (
                   <div className="bg-purple-50 border border-purple-200 rounded p-3">
                     <div className="text-xs font-semibold text-purple-700 mb-1">DAY-OF-PROCEDURE NOTE (clinician adds at D0)</div>
                     <div className="text-xs text-purple-600 mb-2">Brief subjective added by clinician on day of procedure. Will prepend to op note.</div>
                     <textarea className={ic} rows="2" value={form.procedureDaySubjective} onChange={function(e){set("procedureDaySubjective",e.target.value)}} placeholder="e.g. Patient presents today for scheduled NS100 implantation. Pain remains 7/10. No interval changes. Ready to proceed." />
                   </div>
+                  )}
 
                   <div><label className={lc}>Referring Provider</label><input className={ic} value={form.referringProvider} onChange={function(e){set("referringProvider",e.target.value)}} placeholder="Dr. Smith" /></div>
 
@@ -1812,8 +1836,23 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   <div className="bg-gray-50 rounded p-3">
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-xs font-semibold text-gray-500">INSURANCE</div>
-                      <button onClick={function(){capturePhoto("medicare")}} className="px-2 py-1 bg-blue-100 text-blue-600 text-xs rounded font-medium">📷 Snap Card</button>
+                      {(function(){
+                        var pid = form.patientId;
+                        var hasPrimary = pid && photos.some(function(p){return p.patientId===pid && p.type==="medicare"});
+                        var hasSecondary = pid && photos.some(function(p){return p.patientId===pid && p.type==="medicare_secondary"});
+                        return (
+                          <div className="flex gap-1">
+                            <button onClick={function(){capturePhoto("medicare")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasPrimary ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                              {hasPrimary ? "✓ Primary" : "📷 Primary"}
+                            </button>
+                            <button onClick={function(){capturePhoto("medicare_secondary")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasSecondary ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                              {hasSecondary ? "✓ Secondary" : "📷 Secondary"}
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </div>
+                    <div className="text-xs text-gray-400 mb-2">Primary (e.g. Medicare)</div>
                     <input className={ic + " mb-2"} value={form.insuranceName} onChange={function(e){set("insuranceName",e.target.value)}} placeholder="Insurance name (e.g. Medicare Part B)" />
                     <div className="grid grid-cols-2 gap-2 mb-2">
                       <input className={ic} value={form.memberId} onChange={function(e){set("memberId",e.target.value)}} placeholder="Member ID" />
@@ -1823,6 +1862,19 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <input className={ic} value={form.effectiveDate} onChange={function(e){set("effectiveDate",e.target.value)}} placeholder="Effective date" />
                       <input className={ic} value={form.insuredName} onChange={function(e){set("insuredName",e.target.value)}} placeholder="Insured (if not patient)" />
                     </div>
+
+                    {(form.insuranceName2 || form.memberId2) && (
+                      <div className="text-xs text-gray-400 mt-3 mb-2">Secondary (e.g. BCBS Supplement)</div>
+                    )}
+                    {!form.insuranceName2 && !form.memberId2 && (
+                      <div className="text-xs text-gray-400 mt-3 mb-1">Secondary insurance (optional, tap Secondary button above to snap)</div>
+                    )}
+                    <input className={ic + " mb-2"} value={form.insuranceName2} onChange={function(e){set("insuranceName2",e.target.value)}} placeholder="Secondary insurance name" />
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <input className={ic} value={form.memberId2} onChange={function(e){set("memberId2",e.target.value)}} placeholder="Secondary Member ID" />
+                      <input className={ic} value={form.groupNum2} onChange={function(e){set("groupNum2",e.target.value)}} placeholder="Secondary Group #" />
+                    </div>
+                    <input className={ic} value={form.effectiveDate2} onChange={function(e){set("effectiveDate2",e.target.value)}} placeholder="Secondary effective date" />
                   </div>
 
                   <div className="bg-gray-50 rounded p-3">
@@ -1965,6 +2017,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     )}
                   </div>
 
+                  {form.visitType === "D0" && (
                   <div className="bg-gray-50 rounded p-3">
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-xs font-semibold text-gray-500">DEVICE</div>
@@ -1974,7 +2027,15 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                           <option>Right</option>
                           <option>Left</option>
                         </select>
-                        <button onClick={function(){capturePhoto("serial")}} className="px-2 py-1 bg-blue-100 text-blue-600 text-xs rounded font-medium whitespace-nowrap">📷 Snap Sticker</button>
+                        {(function(){
+                          var pid = form.patientId;
+                          var hasSticker = pid && photos.some(function(p){return p.patientId===pid && p.type==="serial"});
+                          return (
+                            <button onClick={function(){capturePhoto("serial")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasSticker ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                              {hasSticker ? "✓ Sticker" : "📷 Sticker"}
+                            </button>
+                          );
+                        })()}
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 mb-2">
@@ -1999,11 +2060,12 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     </div>
                     <input className={ic + " mt-1"} value={form.deviceNotes} onChange={function(e){set("deviceNotes",e.target.value)}} placeholder="Device serial, lot, placement notes..." />
                   </div>
+                  )}
                 </div>
               )}
 
               {/* D20/D90: Progress note with greyed-out original HPI */}
-              {form.visitType !== "D0" && (
+              {(form.visitType === "D20" || form.visitType === "D90") && (
                 <div className="space-y-3">
                   <div className="bg-gray-100 rounded p-3 opacity-60">
                     <div className="text-xs font-semibold text-gray-500 mb-1">ORIGINAL HPI (from D0)</div>
@@ -2086,10 +2148,12 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               )}
 
               <div className="flex gap-2">
-                <button onClick={saveDraft} className="flex-1 py-2.5 bg-yellow-500 text-white rounded-lg text-sm font-medium">{form.visitType === "D0" ? "Save Draft (phone intake)" : "Save Progress"}</button>
-                <button onClick={function(){setFormSection("sensory")}} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">Continue to Sensory</button>
+                <button onClick={saveDraft} className="flex-1 py-2.5 bg-yellow-500 text-white rounded-lg text-sm font-medium">{form.visitType === "Phone Intake" ? "Save Draft" : form.visitType === "D0" ? "Save Draft" : "Save Progress"}</button>
+                {form.visitType !== "Phone Intake" && (
+                  <button onClick={function(){setFormSection("sensory")}} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">Continue to Sensory</button>
+                )}
               </div>
-              {form.visitType === "D0" && (
+              {(form.visitType === "D0" || form.visitType === "Phone Intake") && (
                 <button onClick={generatePreauth} disabled={preauthGenerating} className={"w-full py-2.5 rounded-lg text-sm font-medium mt-2 " + (preauthGenerating ? "bg-gray-300 text-gray-500" : "bg-purple-600 text-white")}>
                   {preauthGenerating ? "Generating..." : "Generate Preauth Packet (H&P + LOMN → Biller)"}
                 </button>
@@ -2311,7 +2375,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         </div>
       )}
       {/* ========== FLOATING SUBMIT BUTTON ========== */}
-      {form.patientId && ["consent","form","photos"].indexOf(view) >= 0 && (
+      {form.patientId && form.visitType !== "Phone Intake" && ["consent","form","photos"].indexOf(view) >= 0 && (
         <div className="fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2">
           {msg.text && (
             <div className={"px-3 py-2 rounded-lg shadow-lg text-xs font-medium max-w-xs " +
