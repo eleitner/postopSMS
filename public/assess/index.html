@@ -1245,6 +1245,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 
     setPreauthGenerating(true);
     try {
+      // Save draft first so the patient is findable later
+      var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
+      var updated = Object.assign({}, drafts);
+      updated[form.patientId] = draftData;
+      setDrafts(updated);
+      storage.set(DRAFTS_KEY, JSON.stringify(updated));
+      var saveDraftPayload = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
+      await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(saveDraftPayload) });
+
+      // Then generate the preauth packet
       var payload = {
         _action: "generatePreauth",
         patientId: form.patientId,
@@ -1254,7 +1264,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         lomnText: generateLOMN()
       };
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
-      flash("Preauth packet sent to biller", "ok");
+      flash("Draft saved + preauth packet sent to biller", "ok");
     } catch(e) {
       flash("Error: " + e.toString(), "err");
     }
@@ -1344,6 +1354,13 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     d[form.patientId] = Object.assign({}, form, { savedAt: new Date().toISOString() });
     setDrafts(d);
     try { storage.set(DRAFTS_KEY, JSON.stringify(d)); } catch(e) {}
+    // Also sync the draft to cloud so other devices can load it
+    if (sheetUrl) {
+      try {
+        var draftSync = Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName });
+        fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(draftSync) });
+      } catch(e) {}
+    }
     var sheetOk = false;
     if (sheetUrl) {
       try {
