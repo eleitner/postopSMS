@@ -23,6 +23,7 @@ const STORAGE_KEY = "dpn-assessments";
 const DRAFTS_KEY = "dpn-drafts";
 const PHOTOS_KEY = "dpn-photos";
 const SHEET_URL_KEY = "dpn-sheet-url";
+const DEFAULT_SHEET_URL = "https://script.google.com/macros/s/AKfycbzZyM-qctswkkk17AQewg36TAddU9lSvtQmUfH1Ffqgi-Q4zwV8TQq08REreYLSOEAB/exec";
 const DIRECTORY_KEY = "dpn-directory";
 
 const storage = {
@@ -56,7 +57,8 @@ const PHOTO_TYPES = [
   { key: "consent_data", label: "Data Use Consent", icon: "D" },
   { key: "medicare", label: "Primary Insurance", icon: "$" },
   { key: "medicare_secondary", label: "Secondary Insurance", icon: "$" },
-  { key: "serial", label: "Device Serial / Lot", icon: "#" },
+  { key: "serial", label: "Device Sticker (top)", icon: "#" },
+  { key: "needles", label: "Needles Sticker (bottom)", icon: "#" },
   { key: "earmap", label: "Ear Map", icon: "M" },
   { key: "earphoto", label: "Ear Photo", icon: "E" },
   { key: "signature_patient", label: "Patient Signature", icon: "✎" },
@@ -157,8 +159,11 @@ const defaultState = {
   insuranceName: "", memberId: "", groupNum: "", effectiveDate: "",
   insuredName: "",
   insuranceName2: "", memberId2: "", groupNum2: "", effectiveDate2: "",
-  // Device (parsed from device sticker)
-  deviceSerial: "", deviceLot: "", timeImplanted: "",
+  // Device (parsed from device sticker - top) and needles (parsed from needles sticker - bottom)
+  deviceSerial: "", deviceModel: "", deviceExpiration: "",
+  needlesLot: "", needlesExpiration: "",
+  deviceLot: "", // legacy field, kept for backwards compat
+  timeImplanted: "",
   // Day-of-procedure subjective (added at D0 visit by clinician)
   procedureDaySubjective: "",
   // Self-report for preauth H&P (no-touch exam)
@@ -222,7 +227,7 @@ function App() {
   const [formSection, setFormSection] = useState("intake"); // intake | sensory
   const [msg, setMsg] = useState({ text: "", type: "" });
   const [submitting, setSubmitting] = useState(false);
-  const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetUrl, setSheetUrl] = useState(DEFAULT_SHEET_URL);
   const [showConfig, setShowConfig] = useState(false);
   const [photoPatientId, setPhotoPatientId] = useState("");
   const [sigModalType, setSigModalType] = useState(null); // null or photo type like "signature_patient"
@@ -380,21 +385,33 @@ function App() {
     } catch(e) { flash("Parse error - enter manually or re-snap", "warn"); }
   }
 
-  async function parseDeviceSticker(base64Data) {
+  async function parseDeviceSticker(base64Data, stickerType) {
+    // stickerType: "device" (top) or "needles" (bottom)
     if (!sheetUrl) return;
-    flash("Parsing device sticker...");
+    var isNeedles = stickerType === "needles";
+    flash("Parsing " + (isNeedles ? "needles" : "device") + " sticker...");
     try {
       var resp = await fetch(sheetUrl, {
         method: "POST",
-        body: JSON.stringify({ _action: "parseDeviceSticker", imageData: base64Data })
+        body: JSON.stringify({
+          _action: "parseDeviceSticker",
+          imageData: base64Data,
+          stickerType: isNeedles ? "needles" : "device"
+        })
       });
       var result = await resp.json();
       if (result.status === "ok" && result.parsed) {
         var p = result.parsed;
         var parts = [];
-        if (p.serial) { set("deviceSerial", p.serial); parts.push("SN " + p.serial); }
-        if (p.lot) { set("deviceLot", p.lot); parts.push("Lot " + p.lot); }
-        flash("Parsed: " + parts.join(" · ") + " (verify below, re-snap if wrong)", "ok");
+        if (isNeedles) {
+          if (p.lot) { set("needlesLot", p.lot); parts.push("Needles Lot " + p.lot); }
+          if (p.expiration) { set("needlesExpiration", p.expiration); parts.push("Exp " + p.expiration); }
+        } else {
+          if (p.serial) { set("deviceSerial", p.serial); parts.push("SN " + p.serial); }
+          if (p.model) { set("deviceModel", p.model); parts.push("Model " + p.model); }
+          if (p.expiration) { set("deviceExpiration", p.expiration); parts.push("Exp " + p.expiration); }
+        }
+        flash(parts.length ? "Parsed: " + parts.join(" · ") + " (verify below)" : "Parsed (no fields detected)", "ok");
       } else {
         flash("Parse failed - enter manually or re-snap", "warn");
       }
@@ -526,7 +543,6 @@ function App() {
   // Silent auto-save: fires on form changes, debounced, no flash messages
   function autoSaveDraft() {
     if (!form.patientId) return;
-    if (!patientName && !form.age && !form.sex) return; // skip empty drafts
     var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
     var updated = Object.assign({}, drafts);
     updated[form.patientId] = draftData;
@@ -636,7 +652,7 @@ function App() {
       return;
     }
     var input = document.createElement("input");
-    input.type = "file"; input.accept = "image/*"; input.capture = "environment";
+    input.type = "file"; input.accept = "image/*";
     input.onchange = function(e) {
       var file = e.target.files[0]; if (!file) return;
       var reader = new FileReader();
@@ -663,7 +679,9 @@ function App() {
           } else if (photoType === "medicare_secondary") {
             parseMedicareCard(compressed, true);
           } else if (photoType === "serial") {
-            parseDeviceSticker(compressed);
+            parseDeviceSticker(compressed, "device");
+          } else if (photoType === "needles") {
+            parseDeviceSticker(compressed, "needles");
           }
         };
         img.src = ev.target.result;
@@ -1228,8 +1246,14 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 "\n" +
 "Office/Facility:    Diabetic Nerve Clinic\n" +
 "\n" +
-"Device Serial:      " + (form.deviceSerial || "") + "\n" +
-"Device Lot:         " + (form.deviceLot || "") + "\n" +
+"DEVICE (Generator):\n" +
+"  Model:            " + (form.deviceModel || "") + "\n" +
+"  Serial:           " + (form.deviceSerial || "") + "\n" +
+"  Expiration:       " + (form.deviceExpiration || "") + "\n" +
+"\n" +
+"NEEDLES (Consumable):\n" +
+"  Lot:              " + (form.needlesLot || "") + "\n" +
+"  Expiration:       " + (form.needlesExpiration || "") + "\n" +
 "\n" +
 "================================================================\n" +
 "PATIENT CONSENT FORM\n" +
@@ -1586,7 +1610,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               <div className="text-xs font-semibold text-green-700">NEW REFERRAL</div>
               <label className="block w-full py-2 bg-blue-600 text-white rounded text-sm font-medium text-center cursor-pointer">
                 Snap Referral Sheet
-                <input type="file" accept="image/*" capture="environment" onChange={handleReferralPhotoCapture} className="hidden" />
+                <input type="file" accept="image/*" onChange={handleReferralPhotoCapture} className="hidden" />
               </label>
               <div className="text-xs text-gray-500 text-center">Or enter manually below</div>
               <input className={ic} value={newRef.name} onChange={function(e){setNewRef(Object.assign({}, newRef, {name:e.target.value}))}} placeholder="Patient name *" />
@@ -2074,27 +2098,45 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   {form.visitType === "D0" && (
                   <div className="bg-gray-50 rounded p-3">
                     <div className="flex items-center justify-between mb-2">
-                      <div className="text-xs font-semibold text-gray-500">DEVICE</div>
+                      <div className="text-xs font-semibold text-gray-500">DEVICE + NEEDLES</div>
                       <div className="flex items-center gap-2">
                         <label className="text-xs text-gray-500">Side:</label>
                         <select className={ic + " w-20"} value={form.implantSide} onChange={function(e){set("implantSide",e.target.value)}}>
                           <option>Right</option>
                           <option>Left</option>
                         </select>
-                        {(function(){
-                          var pid = form.patientId;
-                          var hasSticker = pid && photos.some(function(p){return p.patientId===pid && p.type==="serial"});
-                          return (
-                            <button onClick={function(){capturePhoto("serial")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasSticker ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
-                              {hasSticker ? "✓ Sticker" : "📷 Sticker"}
-                            </button>
-                          );
-                        })()}
                       </div>
                     </div>
+                    <div className="flex gap-2 mb-2">
+                      {(function(){
+                        var pid = form.patientId;
+                        var hasDevice = pid && photos.some(function(p){return p.patientId===pid && p.type==="serial"});
+                        return (
+                          <button onClick={function(){capturePhoto("serial")}} className={"flex-1 px-2 py-1.5 text-xs rounded font-medium " + (hasDevice ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                            {hasDevice ? "✓ Device Sticker (top)" : "📷 Device Sticker (top)"}
+                          </button>
+                        );
+                      })()}
+                      {(function(){
+                        var pid = form.patientId;
+                        var hasNeedles = pid && photos.some(function(p){return p.patientId===pid && p.type==="needles"});
+                        return (
+                          <button onClick={function(){capturePhoto("needles")}} className={"flex-1 px-2 py-1.5 text-xs rounded font-medium " + (hasNeedles ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                            {hasNeedles ? "✓ Needles Sticker (bot)" : "📷 Needles Sticker (bot)"}
+                          </button>
+                        );
+                      })()}
+                    </div>
+                    <div className="text-xs font-medium text-gray-500 mt-1 mb-1">Device (generator)</div>
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      <div><label className={lc}>Model</label><input className={ic} value={form.deviceModel} onChange={function(e){set("deviceModel",e.target.value)}} placeholder="NS0232" /></div>
+                      <div><label className={lc}>Serial</label><input className={ic} value={form.deviceSerial} onChange={function(e){set("deviceSerial",e.target.value)}} placeholder="NS26A03181" /></div>
+                      <div><label className={lc}>Exp</label><input className={ic} value={form.deviceExpiration} onChange={function(e){set("deviceExpiration",e.target.value)}} placeholder="2026-12" /></div>
+                    </div>
+                    <div className="text-xs font-medium text-gray-500 mt-1 mb-1">Needles (consumable)</div>
                     <div className="grid grid-cols-2 gap-2 mb-2">
-                      <div><label className={lc}>Serial</label><input className={ic} value={form.deviceSerial} onChange={function(e){set("deviceSerial",e.target.value)}} placeholder="NS100-XXXXX" /></div>
-                      <div><label className={lc}>Lot</label><input className={ic} value={form.deviceLot} onChange={function(e){set("deviceLot",e.target.value)}} placeholder="Lot #" /></div>
+                      <div><label className={lc}>Lot</label><input className={ic} value={form.needlesLot} onChange={function(e){set("needlesLot",e.target.value)}} placeholder="NS26A1000" /></div>
+                      <div><label className={lc}>Exp</label><input className={ic} value={form.needlesExpiration} onChange={function(e){set("needlesExpiration",e.target.value)}} placeholder="2026-12" /></div>
                     </div>
                     <div className="text-xs font-semibold text-gray-500 mb-1 mt-2">IMPEDANCE (at placement)</div>
                     <div className="grid grid-cols-3 gap-2">
@@ -2112,7 +2154,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <div><label className={lc}>Hz</label><input className={ic} value={form.c2Hz} onChange={function(e){set("c2Hz",e.target.value)}} placeholder="36.48" /></div>
                       <div><label className={lc}>Hz</label><input className={ic} value={form.vagusHz} onChange={function(e){set("vagusHz",e.target.value)}} placeholder="72.96" /></div>
                     </div>
-                    <input className={ic + " mt-1"} value={form.deviceNotes} onChange={function(e){set("deviceNotes",e.target.value)}} placeholder="Device serial, lot, placement notes..." />
+                    <input className={ic + " mt-1"} value={form.deviceNotes} onChange={function(e){set("deviceNotes",e.target.value)}} placeholder="Placement notes..." />
                   </div>
                   )}
                 </div>
