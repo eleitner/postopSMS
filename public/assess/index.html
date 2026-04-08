@@ -1341,12 +1341,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     // Required on D0 (placement visit)
     if (form.visitType === "D0") {
       if (photoTypes.indexOf("consent_social") === -1) errors.push("Missing: Social Media Consent photo");
-      if (photoTypes.indexOf("serial") === -1) errors.push("Missing: Device Serial / Lot photo");
+      if (photoTypes.indexOf("signature_patient") === -1) errors.push("Missing: Patient signature");
+      if (photoTypes.indexOf("signature_witness") === -1) errors.push("Missing: Witness signature");
+      if (photoTypes.indexOf("serial") === -1) errors.push("Missing: Device Sticker (top)");
+      if (photoTypes.indexOf("needles") === -1) errors.push("Missing: Needles Sticker (bottom)");
       if (photoTypes.indexOf("earmap") === -1) errors.push("Missing: Ear Map photo");
       if (photoTypes.indexOf("earphoto") === -1) errors.push("Missing: Ear Photo");
       if (!form.trigeminalOhms || !form.trigeminalHz) errors.push("Missing: Trigeminal impedance values");
       if (!form.c2Ohms || !form.c2Hz) errors.push("Missing: C2 impedance values");
       if (!form.vagusOhms || !form.vagusHz) errors.push("Missing: Vagus impedance values");
+      if (!form.deviceSerial) errors.push("Missing: Device serial number (type or snap sticker)");
     }
 
     // D20 = explant day, want ear photo
@@ -2488,6 +2492,24 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             className={"px-5 py-3 rounded-full shadow-lg font-semibold text-sm text-white " + (submitting ? "bg-gray-400" : "bg-green-600 active:bg-green-700")}>
             {submitting ? "Submitting..." : "Submit " + form.visitType}
           </button>
+        </div>
+      )}
+
+      {/* ========== GLOBAL VALIDATION ERROR MODAL (visible from any tab) ========== */}
+      {showOverride && validationErrors.length > 0 && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(){setShowOverride(false)}}>
+          <div className="bg-white rounded-lg p-4 max-w-md w-full" onClick={function(e){e.stopPropagation()}}>
+            <div className="text-sm font-semibold text-red-600 mb-2">Cannot submit — missing items:</div>
+            <div className="max-h-64 overflow-y-auto mb-3">
+              {validationErrors.map(function(err, i) { return <div key={i} className="text-xs text-red-500 py-0.5">• {err}</div>; })}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={function(){setShowOverride(false); setValidationErrors([])}}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 text-sm rounded font-medium">Fix Items</button>
+              <button onClick={function(){setShowOverride(false); setValidationErrors([]); handleSubmit()}}
+                className="flex-1 py-2 bg-red-100 text-red-600 text-sm rounded font-medium">Override &amp; Submit</button>
+            </div>
+          </div>
         </div>
       )}
 
