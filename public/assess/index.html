@@ -231,6 +231,7 @@ function App() {
   const [consentSigs, setConsentSigs] = useState({ patient: null, witness: null, witnessName: "" });
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
   const [preauthGenerating, setPreauthGenerating] = useState(false);
+  const [lastAutoSave, setLastAutoSave] = useState(null);
   const [directory, setDirectory] = useState([]);
   const [dirName, setDirName] = useState("");
   const [dirId, setDirId] = useState("");
@@ -513,14 +514,39 @@ function App() {
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
     // Save to cloud
     if (sheetUrl) {
-      var cloudData = Object.assign({}, draftData, { _action: "saveDraft" });
-      fetch(sheetUrl, { method: "POST", body: JSON.stringify(cloudData) })
+      var cloudData = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
+      fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) })
         .then(function() { flash("Draft saved locally + cloud"); })
         .catch(function() { flash("Draft saved locally (cloud failed)", "warn"); });
     } else {
       flash("Draft saved locally");
     }
   }
+
+  // Silent auto-save: fires on form changes, debounced, no flash messages
+  function autoSaveDraft() {
+    if (!form.patientId) return;
+    if (!patientName && !form.age && !form.sex) return; // skip empty drafts
+    var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    var updated = Object.assign({}, drafts);
+    updated[form.patientId] = draftData;
+    setDrafts(updated);
+    try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); } catch(e) {}
+    if (sheetUrl) {
+      var cloudData = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
+      try {
+        fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) });
+        setLastAutoSave(new Date());
+      } catch(e) {}
+    }
+  }
+
+  // Debounced auto-save effect
+  useEffect(function() {
+    if (!form.patientId) return;
+    var t = setTimeout(autoSaveDraft, 1500);
+    return function() { clearTimeout(t); };
+  }, [form, patientName]);
 
   async function loadDraft(optionalId) {
     var pid = (typeof optionalId === "string" && optionalId) ? optionalId : form.patientId;
@@ -536,6 +562,9 @@ function App() {
         var result = await resp.json();
         if (result.status === "ok" && result.draft) {
           draftData = result.draft;
+          if (result.source === "sheet1_fallback") {
+            flash("Loaded from Sheet1 (no draft found, using last submitted visit)", "warn");
+          }
         } else if (result.status === "not_found") {
           flash("No cloud draft for " + pid, "warn");
         } else {
@@ -2178,6 +2207,9 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   <button onClick={function(){setFormSection("sensory")}} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">Continue to Sensory</button>
                 )}
               </div>
+              {lastAutoSave && (
+                <div className="text-xs text-gray-400 text-center -mt-1">Auto-saved {lastAutoSave.toLocaleTimeString()}</div>
+              )}
               {(form.visitType === "D0" || form.visitType === "Phone Intake") && (
                 <button onClick={generatePreauth} disabled={preauthGenerating} className={"w-full py-2.5 rounded-lg text-sm font-medium mt-2 " + (preauthGenerating ? "bg-gray-300 text-gray-500" : "bg-purple-600 text-white")}>
                   {preauthGenerating ? "Generating..." : "Generate Preauth Packet (H&P + LOMN → Biller)"}
