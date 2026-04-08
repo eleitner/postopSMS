@@ -58,6 +58,90 @@ const PHOTO_TYPES = [
   { key: "serial", label: "Device Serial / Lot", icon: "#" },
   { key: "earmap", label: "Ear Map", icon: "M" },
   { key: "earphoto", label: "Ear Photo", icon: "E" },
+  { key: "signature_patient", label: "Patient Signature", icon: "✎" },
+  { key: "signature_witness", label: "Witness Signature", icon: "✎" },
+];
+
+const CONSENTS = [
+  {
+    key: "procedure",
+    photoType: "consent_procedure",
+    title: "NS100 Neurostimulator Procedure Consent",
+    body:
+"Returning to normal activity should be put off until results are reviewed by provider. At the same time, the patient should stick to a rehabilitation program to assist treatment.\n\n" +
+"RISKS:\n" +
+"Some patients may experience difficulties in rare instances:\n" +
+"  • Infection at the implant site\n" +
+"  • Pain at the implant site\n" +
+"  • Loss of therapy effect\n" +
+"  • Therapy that did not meet the patient's expectations\n\n" +
+"In addition to these material risks, there may be other possible risks which are unknown at this time.\n\n" +
+"ACKNOWLEDGMENTS:\n" +
+"I understand the risks listed above associated with this procedure.\n" +
+"I acknowledge that I am not currently pregnant.\n" +
+"I acknowledge that I do not have a pacemaker.\n\n" +
+"PROCEDURE EXPLANATION:\n" +
+"The following procedure has been explained to me in general terms, and I understand that:\n\n" +
+"• I have been informed that it is uncommon that patients have some localized bleeding in the area of application with a minor risk of infections, but the risk is mitigated by proper sanitizing techniques.\n\n" +
+"• I hereby request and consent to the implant of the Neurostimulator and the associated treatments for the treatment of my associated diagnosis.\n\n" +
+"• I have had an opportunity to discuss with the provider listed below and/or with other office or clinic personnel, the nature and purpose of the Neurostimulator procedures. I understand that results are not guaranteed.\n\n" +
+"• I have read the above consent with the provider. I have also had an opportunity to ask questions about its content and by signing below I agree to the Neurostimulator procedure.\n\n" +
+"• I understand that I need to allow time to see positive results of the procedure and at the same time put off returning to normal activity until my provider has reviewed the results or the treatment plan is complete.\n\n" +
+"• I intend this consent form to cover the entire course of treatment for my present condition and for any future conditions for which I seek treatment.\n\n" +
+"By signing below, I acknowledge I have read this form, the topics were reviewed by the provider/clinical staff and/or the form has been explained to me. I fully understand its contents and was given ample opportunity to ask additional questions which were answered to my satisfaction.\n\n" +
+"I voluntarily consent to allow the medical provider and all personnel under the provider's direct supervision to be involved in performing such procedures described or otherwise referred to herein."
+  },
+  {
+    key: "data",
+    photoType: "consent_data",
+    title: "Clinical Data Use and Research Consent",
+    body:
+"The Diabetic Nerve Clinic collects and uses de-identified clinical data from your visit for quality improvement, clinical research, and publication purposes.\n\n" +
+"WHAT WE COLLECT:\n" +
+"  • Demographic information (age, sex, diabetes type and duration)\n" +
+"  • Clinical findings from your physical and sensory examination\n" +
+"  • Treatment response data before and after device activation\n" +
+"  • Photographs of the device implant site\n" +
+"  • Follow-up outcomes at 20 and 90 days\n\n" +
+"HOW WE PROTECT YOUR IDENTITY:\n" +
+"Your name and identifying information are never included in research datasets. You are assigned a unique Study ID that is used throughout the research record. Only authorized clinic staff can link the Study ID back to your identity, and only when necessary for your care.\n\n" +
+"HOW YOUR DATA WILL BE USED:\n" +
+"  • Quality improvement of the neurostimulator treatment program\n" +
+"  • Published research on outcomes of diabetic neuropathy treatment\n" +
+"  • Aggregate analyses shared with the scientific community\n" +
+"  • No data will be sold to third parties\n" +
+"  • No individually identifiable information will ever be published\n\n" +
+"YOUR RIGHTS:\n" +
+"  • You may withdraw consent at any time\n" +
+"  • Withdrawal will not affect your clinical care\n" +
+"  • You may request a summary of research findings\n\n" +
+"By signing below, I consent to the collection and use of my de-identified clinical data for the purposes described above."
+  },
+  {
+    key: "social",
+    photoType: "consent_social",
+    title: "Photography and Social Media Consent",
+    body:
+"The Diabetic Nerve Clinic may take photographs or short videos of your treatment site and clinical findings during your care. This consent governs how those images may be used.\n\n" +
+"CLINICAL USE (always permitted with this consent):\n" +
+"  • Medical record documentation\n" +
+"  • Treatment planning and follow-up comparison\n" +
+"  • Insurance documentation including Medicare submission\n" +
+"  • Educational discussion with other clinicians involved in your care\n\n" +
+"EDUCATIONAL AND PROMOTIONAL USE (optional):\n" +
+"By signing below, you also consent to the clinic using de-identified photographs or videos of your treatment for:\n" +
+"  • Educational presentations at medical conferences\n" +
+"  • Training materials for other healthcare providers\n" +
+"  • Clinic website, social media, and marketing materials\n" +
+"  • Patient education materials for future patients\n\n" +
+"PRIVACY PROTECTIONS:\n" +
+"  • Your face will never be shown unless explicitly agreed in writing\n" +
+"  • Identifying features (tattoos, jewelry, distinguishing marks) will be cropped or blurred\n" +
+"  • Your name, date of birth, and contact information will never be associated with any image\n" +
+"  • You may withdraw this consent at any time for future uses\n" +
+"  • Images already used in published materials cannot be recalled\n\n" +
+"By signing below, I grant the Diabetic Nerve Clinic permission to use de-identified images of my treatment for the clinical, educational, and promotional purposes described above."
+  }
 ];
 
 function sumChecked(arr) { return arr.filter(Boolean).length; }
@@ -66,6 +150,22 @@ function toggleInArray(arr, val) { return arr.includes(val) ? arr.filter(functio
 const defaultState = {
   patientId: "", date: new Date().toISOString().split("T")[0], visitType: "D0",
   diabetesDuration: "", diabetesType: "Type 2", age: "", sex: "",
+  // Patient contact + demo (for requisition form)
+  address: "", city: "", state: "", zip: "", phone: "", email: "", dob: "",
+  // Insurance (parsed from Medicare card)
+  insuranceName: "", memberId: "", groupNum: "", effectiveDate: "",
+  insuredName: "",
+  // Device (parsed from device sticker)
+  deviceSerial: "", deviceLot: "", timeImplanted: "",
+  // Day-of-procedure subjective (added at D0 visit by clinician)
+  procedureDaySubjective: "",
+  // Self-report for preauth H&P (no-touch exam)
+  srWounds: "No", srWoundsLocation: "",
+  srBalance: "No", srBalanceDetail: "",
+  srSwelling: "No", srSwellingLocation: "",
+  srBreathing: "No", srBreathingDetail: "",
+  srHeartAwareness: "No", srHeartAwarenessDetail: "",
+  srRhythm: "No", srRhythmDetail: "",
   // Intake
   referringProvider: "", cc: "diabetic nerve pain",
   painRest: "", painBest: "", painWorst: "",
@@ -85,6 +185,7 @@ const defaultState = {
   prognosis: "Good",
   neuropathyType: "Polyneuropathy", neuropathyDistribution: "Bilateral LE",
   // Device
+  implantSide: "Right",
   trigeminalOhms: "", trigeminalHz: "",
   c2Ohms: "", c2Hz: "",
   vagusOhms: "", vagusHz: "",
@@ -122,6 +223,12 @@ function App() {
   const [sheetUrl, setSheetUrl] = useState("");
   const [showConfig, setShowConfig] = useState(false);
   const [photoPatientId, setPhotoPatientId] = useState("");
+  const [sigModalType, setSigModalType] = useState(null); // null or photo type like "signature_patient"
+  const [sigDrawing, setSigDrawing] = useState(false);
+  const [currentConsent, setCurrentConsent] = useState(null); // null or consent key
+  const [consentSigs, setConsentSigs] = useState({ patient: null, witness: null, witnessName: "" });
+  const [scrolledToBottom, setScrolledToBottom] = useState(false);
+  const [preauthGenerating, setPreauthGenerating] = useState(false);
   const [directory, setDirectory] = useState([]);
   const [dirName, setDirName] = useState("");
   const [dirId, setDirId] = useState("");
@@ -148,6 +255,17 @@ function App() {
     try { var d = storage.get(DRAFTS_KEY); if (d && d.value) setDrafts(JSON.parse(d.value)); } catch(e) {}
     try { var dir = storage.get(DIRECTORY_KEY); if (dir && dir.value) setDirectory(JSON.parse(dir.value)); } catch(e) {}
   }, []);
+
+  useEffect(function() {
+    if (!currentConsent) return;
+    // Check if consent body fits without scrolling; if so, mark as already-scrolled
+    setTimeout(function() {
+      var el = document.getElementById("consent-body");
+      if (el && el.scrollHeight <= el.clientHeight + 5) {
+        setScrolledToBottom(true);
+      }
+    }, 100);
+  }, [currentConsent]);
 
   function flash(text, type) { setMsg({text:text, type:type||"ok"}); setTimeout(function(){setMsg({text:"",type:""})}, 3000); }
   function set(key, val) { setForm(function(f) { var n = Object.assign({}, f); n[key] = val; return n; }); }
@@ -228,6 +346,49 @@ function App() {
     flash("Loaded referral for " + ref.name + " as " + id);
   }
 
+  async function parseMedicareCard(base64Data) {
+    if (!sheetUrl) return;
+    flash("Parsing Medicare card...");
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "parseMedicareCard", imageData: base64Data })
+      });
+      var result = await resp.json();
+      if (result.status === "ok" && result.parsed) {
+        var p = result.parsed;
+        if (p.insuranceName) set("insuranceName", p.insuranceName);
+        if (p.memberId) set("memberId", p.memberId);
+        if (p.groupNum) set("groupNum", p.groupNum);
+        if (p.effectiveDate) set("effectiveDate", p.effectiveDate);
+        if (p.patientName && !patientName) setPatientName(p.patientName);
+        flash("Medicare card parsed");
+      } else {
+        flash("Parse failed, enter manually", "warn");
+      }
+    } catch(e) { flash("Parse error, enter manually", "warn"); }
+  }
+
+  async function parseDeviceSticker(base64Data) {
+    if (!sheetUrl) return;
+    flash("Parsing device sticker...");
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "parseDeviceSticker", imageData: base64Data })
+      });
+      var result = await resp.json();
+      if (result.status === "ok" && result.parsed) {
+        var p = result.parsed;
+        if (p.serial) set("deviceSerial", p.serial);
+        if (p.lot) set("deviceLot", p.lot);
+        flash("Device sticker parsed");
+      } else {
+        flash("Parse failed, enter manually", "warn");
+      }
+    } catch(e) { flash("Parse error, enter manually", "warn"); }
+  }
+
   async function parseReferralPhoto(base64Data) {
     if (!sheetUrl) { flash("Set database URL first", "err"); return; }
     flash("Parsing referral photo...");
@@ -297,6 +458,18 @@ function App() {
         if (p.socialTob) set("socialTob", p.socialTob);
         if (p.socialEtOH) set("socialEtOH", p.socialEtOH);
         if (p.socialSubstance) set("socialSubstance", p.socialSubstance);
+        if (p.srWounds) set("srWounds", p.srWounds);
+        if (p.srWoundsLocation) set("srWoundsLocation", p.srWoundsLocation);
+        if (p.srBalance) set("srBalance", p.srBalance);
+        if (p.srBalanceDetail) set("srBalanceDetail", p.srBalanceDetail);
+        if (p.srSwelling) set("srSwelling", p.srSwelling);
+        if (p.srSwellingLocation) set("srSwellingLocation", p.srSwellingLocation);
+        if (p.srBreathing) set("srBreathing", p.srBreathing);
+        if (p.srBreathingDetail) set("srBreathingDetail", p.srBreathingDetail);
+        if (p.srHeartAwareness) set("srHeartAwareness", p.srHeartAwareness);
+        if (p.srHeartAwarenessDetail) set("srHeartAwarenessDetail", p.srHeartAwarenessDetail);
+        if (p.srRhythm) set("srRhythm", p.srRhythm);
+        if (p.srRhythmDetail) set("srRhythmDetail", p.srRhythmDetail);
         // Arrays: pain descriptors, pmhx, prior tx, allergies, contraindications, functional limitations
         if (p.painDescriptors && p.painDescriptors.length) setForm(function(f) { return Object.assign({}, f, { painDescriptors: p.painDescriptors }); });
         if (p.pmhx && p.pmhx.length) setForm(function(f) { return Object.assign({}, f, { pmhx: p.pmhx }); });
@@ -405,6 +578,23 @@ function App() {
   function capturePhoto(photoType) {
     var pid = photoPatientId || form.patientId;
     if (!pid) { flash("Enter a Patient ID first", "err"); return; }
+    // Signature types open the signature modal instead of camera
+    if (photoType === "signature_patient" || photoType === "signature_witness") {
+      setSigModalType(photoType);
+      setTimeout(function() {
+        var canvas = document.getElementById("sig-canvas");
+        if (canvas) {
+          var ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.strokeStyle = "#000000";
+          ctx.lineWidth = 2.5;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+        }
+      }, 50);
+      return;
+    }
     var input = document.createElement("input");
     input.type = "file"; input.accept = "image/*"; input.capture = "environment";
     input.onchange = function(e) {
@@ -425,12 +615,177 @@ function App() {
           try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
           var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
           flash((matched ? matched.label : photoType) + " captured");
+          // Auto-parse Medicare card and device sticker
+          if (photoType === "medicare") {
+            parseMedicareCard(compressed);
+          } else if (photoType === "serial") {
+            parseDeviceSticker(compressed);
+          }
         };
         img.src = ev.target.result;
       };
       reader.readAsDataURL(file);
     };
     input.click();
+  }
+
+  function getSigCoords(e, canvas) {
+    var rect = canvas.getBoundingClientRect();
+    var scaleX = canvas.width / rect.width;
+    var scaleY = canvas.height / rect.height;
+    var clientX, clientY;
+    if (e.touches && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+
+  function sigStart(e) {
+    e.preventDefault();
+    setSigDrawing(true);
+    var canvas = document.getElementById("sig-canvas");
+    if (!canvas) return;
+    var ctx = canvas.getContext("2d");
+    var pos = getSigCoords(e, canvas);
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y);
+  }
+
+  function sigMove(e) {
+    if (!sigDrawing) return;
+    e.preventDefault();
+    var canvas = document.getElementById("sig-canvas");
+    if (!canvas) return;
+    var ctx = canvas.getContext("2d");
+    var pos = getSigCoords(e, canvas);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+  }
+
+  function sigEnd(e) {
+    if (e) e.preventDefault();
+    setSigDrawing(false);
+  }
+
+  function sigClear() {
+    var canvas = document.getElementById("sig-canvas");
+    if (!canvas) return;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function sigSave() {
+    var canvas = document.getElementById("sig-canvas");
+    if (!canvas) return;
+    // Check if canvas is blank
+    var ctx = canvas.getContext("2d");
+    var pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    var hasInk = false;
+    for (var i = 0; i < pixels.length; i += 4) {
+      if (pixels[i] < 250 || pixels[i+1] < 250 || pixels[i+2] < 250) { hasInk = true; break; }
+    }
+    if (!hasInk) { flash("Sign first", "err"); return; }
+    var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+
+    // Consent signatures go to temp state, not photos
+    if (sigModalType === "consent_patient") {
+      setConsentSigs(function(s) { return Object.assign({}, s, { patient: dataUrl }); });
+      setSigModalType(null);
+      flash("Patient signature captured");
+      return;
+    }
+    if (sigModalType === "consent_witness") {
+      setConsentSigs(function(s) { return Object.assign({}, s, { witness: dataUrl }); });
+      setSigModalType(null);
+      flash("Witness signature captured");
+      return;
+    }
+
+    // Regular signature photos
+    var pid = photoPatientId || form.patientId;
+    if (!pid) { flash("No Patient ID", "err"); return; }
+    var newPhoto = { id: Date.now(), patientId: pid, type: sigModalType, timestamp: new Date().toISOString(), data: dataUrl };
+    var updated = photos.concat([newPhoto]);
+    setPhotos(updated);
+    try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
+    var matched = PHOTO_TYPES.find(function(t){return t.key===sigModalType});
+    flash((matched ? matched.label : "Signature") + " saved");
+    setSigModalType(null);
+  }
+
+  // Composite consent = title + acknowledgment + two signatures + timestamp, rendered as one image
+  function saveConsent() {
+    var pid = form.patientId;
+    if (!pid) { flash("No Patient ID", "err"); return; }
+    if (!currentConsent) return;
+    var consent = CONSENTS.find(function(c){return c.key===currentConsent});
+    if (!consent) return;
+    if (!consentSigs.patient) { flash("Patient signature required", "err"); return; }
+    if (!consentSigs.witness) { flash("Witness signature required", "err"); return; }
+    if (!consentSigs.witnessName.trim()) { flash("Witness name required", "err"); return; }
+
+    // Render composite image
+    var canvas = document.createElement("canvas");
+    canvas.width = 900;
+    canvas.height = 700;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#000000";
+    ctx.font = "bold 22px Arial";
+    ctx.fillText(consent.title, 30, 40);
+    ctx.font = "14px Arial";
+    ctx.fillText("Study ID: " + pid, 30, 70);
+    ctx.fillText("Date: " + new Date().toLocaleString(), 30, 90);
+    ctx.fillText("Patient has read and agreed to the full consent text.", 30, 120);
+    ctx.fillText("Full consent text is preserved in the patient's clinical record.", 30, 140);
+
+    // Patient sig
+    ctx.strokeStyle = "#999999";
+    ctx.strokeRect(30, 180, 400, 200);
+    ctx.fillStyle = "#666666";
+    ctx.font = "12px Arial";
+    ctx.fillText("PATIENT SIGNATURE", 30, 175);
+    var patientImg = new Image();
+    patientImg.onload = function() {
+      ctx.drawImage(patientImg, 30, 180, 400, 200);
+
+      // Witness sig
+      ctx.strokeStyle = "#999999";
+      ctx.strokeRect(470, 180, 400, 200);
+      ctx.fillStyle = "#666666";
+      ctx.fillText("WITNESS SIGNATURE", 470, 175);
+      ctx.fillText("Witness: " + consentSigs.witnessName, 470, 400);
+
+      var witnessImg = new Image();
+      witnessImg.onload = function() {
+        ctx.drawImage(witnessImg, 470, 180, 400, 200);
+
+        // Footer
+        ctx.fillStyle = "#000000";
+        ctx.font = "11px Arial";
+        ctx.fillText("Diabetic Nerve Clinic - Signed electronically at the time of visit", 30, 450);
+        ctx.fillText("This document constitutes informed consent for the procedure/use described above.", 30, 468);
+
+        // Save as photo
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        var newPhoto = { id: Date.now(), patientId: pid, type: consent.photoType, timestamp: new Date().toISOString(), data: dataUrl };
+        var updated = photos.concat([newPhoto]);
+        setPhotos(updated);
+        try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
+        flash(consent.title + " signed and saved");
+        setCurrentConsent(null);
+        setConsentSigs({ patient: null, witness: null, witnessName: "" });
+        setScrolledToBottom(false);
+      };
+      witnessImg.src = consentSigs.witness;
+    };
+    patientImg.src = consentSigs.patient;
   }
 
   function deletePhoto(id) {
@@ -487,6 +842,112 @@ function App() {
     };
   }
 
+  // Generate standalone pre-auth H&P matching Lindsey's template
+  function generateHnP() {
+    var sexWord = form.sex === "M" ? "male" : form.sex === "F" ? "female" : "patient";
+    var pmhxList = form.pmhx.length ? form.pmhx.join(", ") : "None";
+    return "Patient Name: " + (patientName || "[Name]") + "\n" +
+"DOB: [DOB]\n" +
+"Visit Date: " + form.date + "\n" +
+"Provider: Dr. Lindsey A. Nelson\n" +
+"Referring Physician: " + (form.referringProvider || "[Provider]") + "\n\n" +
+"CC: diabetic nerve pain\n\n" +
+"HPI:\n" +
+"Patient is a " + form.age + " year old " + sexWord + " with a diagnosis of " + form.diabetesType + " Diabetes Mellitus for " + (form.diabetesDuration || "___") + " years. Patient also has a diagnosis of chronic diabetic nerve pain (G89.29) rating their daily pain as the following on the Numeric Rating Scale (NRS):\n" +
+"  Rest " + (form.painRest || "___") + "/10\n" +
+"  Best " + (form.painBest || "___") + "/10\n" +
+"  Worst " + (form.painWorst || "___") + "/10\n\n" +
+"The patient describes the following pain symptoms: " + (form.painDescriptors.length ? form.painDescriptors.join(", ").toLowerCase() : "burning, tingling, numbness") + " in the area of the neuropathy. The patient also describes " + (form.functionalLimitations.length ? form.functionalLimitations.join(", ").toLowerCase() : "decreased activity, mobility, sleep, quality of life") + " related to the pain. " +
+(form.functionalLimitations.indexOf("Balance issues / fall risk") >= 0 ? "This has contributed to balance issues increasing their risk of fall and injury. " : "") +
+"Patient has tried conservative treatment options such as " + (form.priorTx.length ? form.priorTx.join(", ").toLowerCase() : "physical therapy, compression stockings, over-the-counter medications and prescription medications") + " with " + (form.txNotes || "minimal improvement and inability to tolerate long term due to side effects") + ". " +
+"Noteworthy, the patient's blood glucose levels have " + (form.glucoseControl === "Poorly controlled" ? "not been" : form.glucoseControl === "Well controlled" ? "been" : "[been/not been]") + " under control.\n\n" +
+"Pertinent PMHx: " + pmhxList + "\n" +
+(form.pmhxNotes ? form.pmhxNotes + "\n" : "") + "\n" +
+"PSHx: " + (form.pshx || "None") + "\n\n" +
+"Allergies: " + (form.allergies.length ? form.allergies.join(", ") : "NKDA") + (form.allergiesOther ? ", " + form.allergiesOther : "") + "\n\n" +
+"Medications:\n" + (form.medications || "None listed") + "\n\n" +
+"Social Hx:\n" +
+"  Tobacco: " + form.socialTob + "\n" +
+"  EtOH: " + form.socialEtOH + "\n" +
+"  Substance abuse: " + form.socialSubstance + "\n" +
+(form.socialNotes ? form.socialNotes + "\n" : "") + "\n" +
+"Review of Symptoms:\n" +
+"Pertinent symptoms as above\n\n" +
+"Self-Reported Exam (phone intake, no-touch):\n" +
+"  Skin integrity: " + (form.srWounds === "Yes" ? "Patient reports ulcers or wounds - " + (form.srWoundsLocation || "location not specified") : "Patient denies ulcers or wounds on feet or hands") + "\n" +
+"  Balance: " + (form.srBalance === "Yes" ? "Patient reports balance issues" + (form.srBalanceDetail ? " - " + form.srBalanceDetail : "") : "Patient denies balance issues or recent falls") + "\n" +
+"  Peripheral edema: " + (form.srSwelling === "Yes" ? "Patient reports swelling - " + (form.srSwellingLocation || "location not specified") : "Patient denies swelling in arms or legs") + "\n" +
+"  Respiratory: " + (form.srBreathing === "Yes" ? "Patient reports increased work of breathing" + (form.srBreathingDetail ? " - " + form.srBreathingDetail : "") : "Patient denies increased work of breathing") + "\n" +
+"  Cardiac awareness: " + (form.srHeartAwareness === "Yes" ? "Patient reports palpitations or heart awareness" + (form.srHeartAwarenessDetail ? " - " + form.srHeartAwarenessDetail : "") : "Patient denies palpitations or heart awareness") + "\n" +
+"  Cardiac rhythm: " + (form.srRhythm === "Yes" ? "Patient reports known rhythm problem" + (form.srRhythmDetail ? " - " + form.srRhythmDetail : "") : "Patient denies known rhythm problems") + "\n" +
+"  Neuropathy symptoms: " + (form.painDescriptors.length ? form.painDescriptors.join(", ") : "burning, tingling, numbness") + " in distribution described above\n" +
+"  Functional: " + (form.functionalLimitations.length ? form.functionalLimitations.join(", ") : "as described in HPI") + "\n\n" +
+"Labs:\n" +
+"  BG: " + (form.bgFasting || "pending") + "\n" +
+"  A1C: " + (form.a1c || "pending") + "\n" +
+(form.labNotes ? "  Notes: " + form.labNotes + "\n" : "") + "\n" +
+"Data Review: Health app data reviewed\n\n" +
+"Assessment:\n" +
+form.age + " year old " + sexWord + " patient with chronic (>" + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + ") diabetic " + form.neuropathyType.toLowerCase() + " pain at levels >" + (form.painRest || "5") + "/10. Conservative measures have been attempted without significant long-term improvement of their pain symptoms and patient is eager to find relief of this debilitating condition.\n\n" +
+"1. Diabetes Dx:\n" +
+form.dxCodes.filter(function(c){return c.indexOf("E1") === 0 && c.indexOf(".4") < 0}).map(function(c){return "   - " + c;}).join("\n") + "\n\n" +
+"2. Diabetic Neuropathy Dx (" + form.neuropathyType + ", " + form.neuropathyDistribution + "):\n" +
+form.dxCodes.filter(function(c){return c.indexOf(".4") >= 0}).map(function(c){return "   - " + c;}).join("\n") + "\n\n" +
+"3. Chronic Pain Dx:\n" +
+"   - G89.29\n" +
+"     Pain symptoms hallmark for diabetic neuropathic pain\n" +
+"     NRS >5/10\n" +
+"     Failed conservative measures including " + (form.priorTx.length ? form.priorTx.join(", ").toLowerCase() : "medications, physical therapy, compression stockings") + "\n\n" +
+"Plan:\n" +
+"After focused evaluation of the patient I am recommending that they undergo implantable percutaneous placement of the NS-100 neurostimulator device at the site of the auricular branches of the cervical and cranial nerve branches as treatment for their diabetic nerve pain. I have explained the treatment plan and neurostimulator device along with how it works to the patient. As part of the education to the patient, they have reviewed the video explaining in common language detail that explains the following:\n\n" +
+"  - How exposure to high blood sugars causes damage to the nerves of the feet and hands\n" +
+"  - What to expect when having the device placed and how to care for the device while it is implanted on the ear\n" +
+"  - How the device works and what it does to the body to help heal the damaged nerves\n" +
+"  - Understand the timeframe of when to expect a reduction in their pain symptoms\n" +
+"  - Reinforcement on life choices that will improve their overall health and wellbeing and specifically how to prevent recurrent damage from poor glucose control. These life choices primarily focus on diet, exercise, avoidance of smoking and sleep patterns.\n\n" +
+"I have addressed all questions and concerns and at this time they wish to proceed with placement of the NS-100 which will be scheduled in the near future.\n\n" +
+"In total, I spent greater than 30 minutes with the patient reviewing their health information and discussion of the treatment plan.\n\n" +
+"Lindsey A. Nelson, MD\n" +
+"Date: " + form.date;
+  }
+
+  // Generate standalone op note matching Lindsey's Medicare-audited template
+  function generateOpNoteStandalone() {
+    var side = form.implantSide || "Right";
+    var sideLower = side.toLowerCase();
+    var dxExtras = form.dxCodes.length ? form.dxCodes.map(function(c, i) { return "  " + (i + 3) + ". " + c; }).join("\n") + "\n" : "";
+
+    return "Operative Note for Implantation of Subdermal Auricular Peripheral Nerve Stimulator (NS100)\n\n" +
+"Patient: " + (patientName || "[Name]") + " (Study ID: " + (form.patientId || "[ID]") + ")\n" +
+"Date of Service: " + form.date + "\n\n" +
+"Preoperative Diagnosis:\n" +
+"  1. Peripheral Neuralgia/Neuropathy - Lower Extremities\n" +
+"  2. Diabetes Mellitus\n" +
+dxExtras + "\n" +
+"Postoperative Diagnosis:\n" +
+"  1. Same\n\n" +
+"Procedure:\n" +
+"  1. Implantation of Trial Peripheral Neurostimulator of the distal " + side + " C2 spinal nerve root\n" +
+"  2. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Vagus nerve\n" +
+"  3. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Trigeminal nerve\n" +
+"  4. Intraoperative electrical analysis and generator reprogramming of trial peripheral and cranial neurostimulator electrode systems.\n\n" +
+"Provider: Lindsey A. Nelson, MD\n" +
+"Anesthesia: Topical Anesthetic\n" +
+"Complications: None.\n\n" +
+(form.procedureDaySubjective ? "Day of Procedure Subjective:\n" + form.procedureDaySubjective + "\n\n" : "") +
+"Operative Note:\n" +
+"This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a class 2 low to moderate risk device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at a power of 200 for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
+"After standard of care informed consent was performed and obtained, including but not limited to a review of all potential treatment alternatives and options, the patient agreed and requested to proceed accepting all known and unknown procedural (and anesthesia) risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
+"First, the programmable patient technical unit was utilized to precisely identify the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. This was objectively confirmed within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power densities) were applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.trigeminalOhms || "325-350") + " Ohms and " + (form.trigeminalHz || "9.12") + "Hz - guiding the precise sub dermal implantation of the platinum iridium electrode.\n\n" +
+"Second, the programmable patient technical unit was utilized to precisely identify the distal C2 spinal nerve root lesser occipital branch nerve. This was objectively confirmed at the posterior mid helix - mid concha. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep current and power densities) were again applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.c2Ohms || "350-360") + " Ohms and " + (form.c2Hz || "36.48") + "Hz - guiding the precise sub-dermal implantation of the second platinum iridium electrode.\n\n" +
+"Third, the programmable patient technical unit was utilized to precisely identify the auricular branch of the vagus cranial nerve. This was objectively confirmed at the inferomedial antitragus again utilizing real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power density arrays) applied with real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.vagusOhms || "400") + " Ohms and " + (form.vagusHz || "72.96") + "Hz - guiding the precise sub-dermal implantation of the third platinum iridium electrode.\n\n" +
+"After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post procedure until meeting stable discharge criteria and discharged without complication - given complete postoperative and followup instructions.\n\n" +
+"Specific Follow-up: Instructions given to patient for management and care of the dressing." +
+(form.deviceNotes ? "\n\nDevice: " + form.deviceNotes : "") + "\n\n" +
+"Lindsey A. Nelson, MD\n" +
+"Date: " + form.date;
+  }
+
   // Generate clinical note
   function generateNote() {
     var lPre=sumChecked(form.leftFootPre), rPre=sumChecked(form.rightFootPre);
@@ -519,31 +980,41 @@ function App() {
     if (form.visitType === "D0") {
       var dxLine = form.dxCodes.length ? form.dxCodes.join(", ") : "E11.42, G89.29";
 
-      var opNote = "OPERATIVE NOTE - IMPLANTATION OF TRIAL NEUROSTIMULATOR (NS100)\n\n" +
+      var side = form.implantSide || "Right";
+      var sideLower = side.toLowerCase();
+
+      var opNote = "Operative Note for Implantation of Subdermal Auricular Peripheral Nerve Stimulator (NS100)\n\n" +
+"Date of Service: " + form.date + "\n\n" +
 "Preoperative Diagnosis:\n" +
-"  " + dxLine + " - " + form.neuropathyType + ", " + form.neuropathyDistribution + "\n\n" +
-"Postoperative Diagnosis: Same\n\n" +
+"  1. Peripheral Neuralgia/Neuropathy - Lower Extremities\n" +
+"  2. Diabetes Mellitus\n" +
+(form.dxCodes.length ? form.dxCodes.map(function(c, i) { return "  " + (i + 3) + ". " + c; }).join("\n") + "\n" : "") +
+"\nPostoperative Diagnosis:\n" +
+"  1. Same\n\n" +
 "Procedure:\n" +
-"  Implantation of trial peripheral neurostimulator of the distal auricular branches\n" +
-"  of cranial nerves V, VII, IX, X and cervical spinal nerve roots C1-C3\n" +
-"  Intraoperative electrical analysis and generator reprogramming\n\n" +
-"Anesthesia: Topical anesthetic\n" +
-"Complications: None\n\n" +
+"  1. Implantation of Trial Peripheral Neurostimulator of the distal " + side + " C2 spinal nerve root\n" +
+"  2. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Vagus nerve\n" +
+"  3. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Trigeminal nerve\n" +
+"  4. Intraoperative electrical analysis and generator reprogramming of trial peripheral and cranial neurostimulator electrode systems.\n\n" +
+"Provider: Lindsey A. Nelson, MD\n" +
+"Anesthesia: Topical Anesthetic\n" +
+"Complications: None.\n\n" +
+(form.procedureDaySubjective ? "Day of Procedure Subjective:\n" + form.procedureDaySubjective + "\n\n" : "") +
 "Operative Note:\n" +
-"Patient has maximized medical management and failed to achieve long-lasting symptom control with conservative therapies for greater than " + (form.painDuration || "___") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. Patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation.\n\n" +
-"After standard of care informed consent was obtained, topical anesthetic was placed at the anticipated implantation sites. Preparation and draping of the surgical site was carried out in the usual sterile fashion.\n\n" +
-"The programmable patient technical unit was utilized to precisely identify and implant electrodes at the following locations:\n" +
-(form.trigeminalOhms ? "  1. Trigeminal nerve (CN V): Scapha medial to helix, " + form.trigeminalOhms + " ohms, " + form.trigeminalHz + " Hz\n" : "") +
-(form.c2Ohms ? "  2. Lesser occipital nerve (C2): Posterior mid helix-concha, " + form.c2Ohms + " ohms, " + form.c2Hz + " Hz\n" : "") +
-(form.vagusOhms ? "  3. Vagus nerve (CN X): Inferomedial antitragus, " + form.vagusOhms + " ohms, " + form.vagusHz + " Hz\n" : "") +
-"\nAll electrodes secured, dressing applied, external battery connected and secured. Patient monitored post-procedure, met discharge criteria, discharged without complication with complete postoperative instructions.\n" +
-(form.deviceNotes ? "\nDevice: " + form.deviceNotes + "\n" : "");
+"This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a class 2 low to moderate risk device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at a power of 200 for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
+"After standard of care informed consent was performed and obtained, including but not limited to a review of all potential treatment alternatives and options, the patient agreed and requested to proceed accepting all known and unknown procedural (and anesthesia) risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
+"First, the programmable patient technical unit was utilized to precisely identify the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. This was objectively confirmed within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power densities) were applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.trigeminalOhms || "325-350") + " Ohms and " + (form.trigeminalHz || "9.12") + "Hz - guiding the precise sub dermal implantation of the platinum iridium electrode.\n\n" +
+"Second, the programmable patient technical unit was utilized to precisely identify the distal C2 spinal nerve root lesser occipital branch nerve. This was objectively confirmed at the posterior mid helix - mid concha. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep current and power densities) were again applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.c2Ohms || "350-360") + " Ohms and " + (form.c2Hz || "36.48") + "Hz - guiding the precise sub-dermal implantation of the second platinum iridium electrode.\n\n" +
+"Third, the programmable patient technical unit was utilized to precisely identify the auricular branch of the vagus cranial nerve. This was objectively confirmed at the inferomedial antitragus again utilizing real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power density arrays) applied with real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.vagusOhms || "400") + " Ohms and " + (form.vagusHz || "72.96") + "Hz - guiding the precise sub-dermal implantation of the third platinum iridium electrode.\n\n" +
+"After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post procedure until meeting stable discharge criteria and discharged without complication - given complete postoperative and followup instructions.\n\n" +
+"Specific Follow-up: Instructions given to patient for management and care of the dressing." +
+(form.deviceNotes ? "\n\nDevice: " + form.deviceNotes : "");
 
       return header +
 "DIAGNOSIS: " + dxLine + "\n\n" +
 "CC: " + form.cc + "\n" +
 "Diabetes: " + form.diabetesType + ", " + form.diabetesDuration + " yrs | A1C: " + (form.a1c||"pending") + " | Glucose control: " + (form.glucoseControl||"N/A") + "\n" +
-"Chronic pain duration: " + (form.painDuration||"___") + " " + form.painDurationUnit.toLowerCase() + "\n\n" +
+"Pain duration: " + (form.painDuration||"___") + " " + form.painDurationUnit.toLowerCase() + "\n\n" +
 "HPI: Pt is a " + form.age + " year old " + (form.sex==="M"?"male":"female") + " with " + form.diabetesType + " DM x " + form.diabetesDuration + " years presenting with chronic diabetic neuropathic pain.\n" +
 "Pain NRS: Rest " + form.painRest + "/10, Best " + form.painBest + "/10, Worst " + form.painWorst + "/10\n" +
 "Descriptors: " + (form.painDescriptors.length ? form.painDescriptors.join(", ") : "none selected") + (form.painNotes ? " | " + form.painNotes : "") + "\n" +
@@ -643,6 +1114,131 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 "Date: " + form.date;
   }
 
+  function generateRequisition() {
+    // Parse name into last/first/MI if possible
+    var nameLast = "", nameFirst = "", nameMI = "";
+    if (patientName) {
+      if (patientName.indexOf(",") >= 0) {
+        var parts = patientName.split(",");
+        nameLast = (parts[0] || "").trim();
+        var rest = (parts[1] || "").trim().split(" ");
+        nameFirst = rest[0] || "";
+        nameMI = rest.length > 1 ? rest[1].charAt(0) : "";
+      } else {
+        var words = patientName.trim().split(" ");
+        if (words.length === 1) { nameFirst = words[0]; }
+        else if (words.length === 2) { nameFirst = words[0]; nameLast = words[1]; }
+        else { nameFirst = words[0]; nameMI = words[1].charAt(0); nameLast = words.slice(2).join(" "); }
+      }
+    }
+    var dxList = form.dxCodes.length ? form.dxCodes : ["E11.42", "G89.29"];
+    var dxPadded = [dxList[0] || "", dxList[1] || "", dxList[2] || "", dxList[3] || ""];
+
+    return "REQUISITION FORM AND PATIENT CONSENT\n" +
+"NS100 Neurostimulator Implantation\n\n" +
+"================================================================\n" +
+"BILL TO\n" +
+"================================================================\n" +
+"Insurance Name:     " + (form.insuranceName || "") + "\n" +
+"Member ID:          " + (form.memberId || "") + "\n" +
+"Group #:            " + (form.groupNum || "") + "\n" +
+"Effective Date:     " + (form.effectiveDate || "") + "\n" +
+"\n" +
+"Date Implanted:     " + form.date + "\n" +
+"Time Implanted:     " + (form.timeImplanted || "") + "\n" +
+"Physician Name:     Lindsey A. Nelson, MD\n" +
+"\n" +
+"================================================================\n" +
+"PATIENT INFORMATION\n" +
+"================================================================\n" +
+"Last Name:          " + nameLast + "\n" +
+"First Name:         " + nameFirst + "\n" +
+"MI:                 " + nameMI + "\n" +
+"\n" +
+"Address:            " + (form.address || "") + "\n" +
+"City:               " + (form.city || "") + "\n" +
+"State:              " + (form.state || "") + "\n" +
+"Zip:                " + (form.zip || "") + "\n" +
+"\n" +
+"Phone:              " + (form.phone || "") + "\n" +
+"Email:              " + (form.email || "") + "\n" +
+"DOB:                " + (form.dob || "") + "\n" +
+"Gender:             " + (form.sex || "") + "\n" +
+"\n" +
+"Insured Party:      " + (form.insuredName || "(Same as patient)") + "\n" +
+"\n" +
+"================================================================\n" +
+"DIAGNOSIS / FACILITY / DEVICE\n" +
+"================================================================\n" +
+"DX 1:               " + dxPadded[0] + "\n" +
+"DX 2:               " + dxPadded[1] + "\n" +
+"DX 3:               " + dxPadded[2] + "\n" +
+"DX 4:               " + dxPadded[3] + "\n" +
+"\n" +
+"Office/Facility:    Diabetic Nerve Clinic\n" +
+"\n" +
+"Device Serial:      " + (form.deviceSerial || "") + "\n" +
+"Device Lot:         " + (form.deviceLot || "") + "\n" +
+"\n" +
+"================================================================\n" +
+"PATIENT CONSENT FORM\n" +
+"================================================================\n\n" +
+"Returning to normal activity should be put off until results are reviewed by provider. At the same time, the patient should stick to a rehabilitation program to assist treatment.\n\n" +
+"RISKS\n" +
+"Some patients may experience difficulties in rare instances:\n" +
+"  - Infection at the implant site\n" +
+"  - Pain at the implant site\n" +
+"  - Loss of therapy effect\n" +
+"  - Therapy that did not meet the patient's expectations\n\n" +
+"In addition to these material risks, there may be other possible risks which are unknown at this time.\n\n" +
+"PATIENT ACKNOWLEDGMENTS\n" +
+"I understand the risks listed above associated with this procedure.\n" +
+"I acknowledge that " + (patientName || "the patient") + " is not currently pregnant.\n" +
+"I acknowledge that " + (patientName || "the patient") + " does not have a pacemaker.\n\n" +
+"The following procedure has been explained to me in general terms, and I understand that:\n\n" +
+"  - I have been informed that it is uncommon that patients have some localized bleeding in the area of application with a minor risk of infections, but the risk is mitigated by proper sanitizing techniques.\n\n" +
+"  - I hereby request and consent to the implant of the Neurostimulator and the associated treatments for the treatment of my associated diagnosis.\n\n" +
+"  - I have had an opportunity to discuss with the provider listed below and/or with other office or clinic personnel, the nature and purpose of the Neurostimulator procedures. I understand that results are not guaranteed.\n\n" +
+"  - I have read the above consent with the provider. I have also had an opportunity to ask questions about its content and by signing below I agree to the Neurostimulator procedure.\n\n" +
+"  - I understand that I need to allow time to see positive results of the procedure and at the same time put off returning to normal activity until my provider has reviewed the results or the treatment plan is complete.\n\n" +
+"  - I intend this consent form to cover the entire course of treatment for my present condition and for any future conditions for which I seek treatment.\n\n" +
+"By signing this form, I acknowledge I have read this form, the topics were reviewed by the provider/clinical staff and/or the form has been explained to me. I fully understand its contents and was given ample opportunity to ask additional questions which were answered to my satisfaction.\n\n" +
+"I voluntarily consent to allow the medical provider and all personnel under the provider's direct supervision to be involved in performing such procedures described or otherwise referred to herein.\n\n" +
+"================================================================\n" +
+"Patient Name: " + (patientName || "") + "          Date: " + form.date + "\n" +
+"\n" +
+"Signature on file (see attached consent image)\n" +
+"\n" +
+"Office Personnel Name: _______________________        Date: _______\n" +
+"\n" +
+"Signature: _______________________\n";
+  }
+
+  async function generatePreauth() {
+    if (!form.patientId) { flash("Study ID required", "err"); return; }
+    if (!patientName) { flash("Patient name required (enter in Assess tab)", "err"); return; }
+    if (!form.age || !form.sex) { flash("Age and sex required", "err"); return; }
+    if (!form.dxCodes.length) { flash("At least one DX code required", "err"); return; }
+    if (!sheetUrl) { flash("No script URL configured", "err"); return; }
+
+    setPreauthGenerating(true);
+    try {
+      var payload = {
+        _action: "generatePreauth",
+        patientId: form.patientId,
+        patientName: patientName,
+        date: form.date,
+        hnpText: generateHnP(),
+        lomnText: generateLOMN()
+      };
+      await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
+      flash("Preauth packet sent to biller", "ok");
+    } catch(e) {
+      flash("Error: " + e.toString(), "err");
+    }
+    setPreauthGenerating(false);
+  }
+
   // Validation - check for missing required items
   function getValidationErrors() {
     var errors = [];
@@ -731,20 +1327,26 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       try {
         // Include note text and photos for Google Doc creation
         var submitData = Object.assign({}, row);
-        submitData._noteText = generateNote();
         submitData._patientName = patientName;
-        // Include LOMN for D0
         if (form.visitType === "D0") {
-          submitData._lomnText = generateLOMN();
-        }
-        // Include photos for D0
-        if (form.visitType === "D0") {
+          // D0 creates only op note and requisition - H&P and LOMN come from Preauth button
+          submitData._opNoteText = generateOpNoteStandalone();
+          submitData._requisitionText = generateRequisition();
+          // Photos attach to op note
           var pid = form.patientId;
           var patientPhotos = pid ? getPhotosForPatient(pid) : [];
           submitData._photos = patientPhotos.map(function(p) {
             var matched = PHOTO_TYPES.find(function(t){return t.key===p.type});
             return { type: p.type, label: (matched ? matched.label : p.type), data: p.data };
           });
+          // Signed procedure consent goes on the requisition doc
+          var procedureConsent = patientPhotos.find(function(p){return p.type === "consent_procedure"});
+          if (procedureConsent) {
+            submitData._consentImage = procedureConsent.data;
+          }
+        } else {
+          // D20, D90: single progress note
+          submitData._noteText = generateNote();
         }
         await fetch(sheetUrl, {method:"POST", mode:"no-cors", body:JSON.stringify(submitData)});
         sheetOk = true;
@@ -856,7 +1458,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   return (
     <div className="max-w-lg mx-auto bg-white min-h-screen">
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
-        {[["referrals","Referrals"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
+        {[["referrals","Referrals"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
           var v = item[0], l = item[1];
           return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
         })}
@@ -977,6 +1579,152 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         </div>
       )}
 
+      {/* ========== CONSENT TAB ========== */}
+      {view === "consent" && (
+        <div className="p-4 space-y-3">
+          <div>
+            <label className={lc}>Patient (load from Assess tab or enter ID)</label>
+            <input className={ic} value={form.patientId} onChange={function(e){set("patientId",e.target.value)}} placeholder="DNC-XXXX" />
+            {patientName && <div className="text-xs text-gray-500 mt-1">{patientName}</div>}
+          </div>
+
+          {!form.patientId && (
+            <div className="text-center text-gray-400 text-sm py-6">Enter Study ID to begin consent</div>
+          )}
+
+          {/* Consent list view */}
+          {form.patientId && !currentConsent && (
+            <div className="space-y-3">
+              <div className="text-xs text-gray-500">Tap a consent to review and sign. Patient reads the full text, then patient and witness both sign at the bottom.</div>
+              {CONSENTS.map(function(c) {
+                var existing = photos.find(function(p){return p.patientId === form.patientId && p.type === c.photoType});
+                var signed = !!existing;
+                return (
+                  <button key={c.key} onClick={function(){setCurrentConsent(c.key); setScrolledToBottom(false); setConsentSigs({patient:null,witness:null,witnessName:""});}}
+                    className={"w-full text-left p-4 rounded-lg border-2 " + (signed ? "bg-green-50 border-green-300" : "bg-white border-gray-200")}>
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium text-gray-800">{c.title}</div>
+                      <div className={"text-xs font-semibold " + (signed ? "text-green-600" : "text-gray-400")}>{signed ? "SIGNED ✓" : "Tap to sign"}</div>
+                    </div>
+                    {signed && <div className="text-xs text-gray-500 mt-1">{new Date(existing.timestamp).toLocaleString()}</div>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Consent detail view */}
+          {form.patientId && currentConsent && (function() {
+            var consent = CONSENTS.find(function(c){return c.key===currentConsent});
+            if (!consent) return null;
+            var canSave = scrolledToBottom && consentSigs.patient && consentSigs.witness && consentSigs.witnessName.trim();
+            return (
+              <div className="space-y-3">
+                <button onClick={function(){setCurrentConsent(null)}} className="text-xs text-blue-600">← Back to consents</button>
+                <div className="font-bold text-gray-800 text-base">{consent.title}</div>
+                <div className="text-xs text-gray-500">Patient: {patientName || form.patientId}</div>
+
+                {/* Scrollable consent body */}
+                <div
+                  id="consent-body"
+                  className="border-2 border-gray-200 rounded bg-gray-50 p-3 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap"
+                  style={{maxHeight: "300px", overflowY: "auto"}}
+                  onScroll={function(e){
+                    var el = e.target;
+                    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 20) {
+                      setScrolledToBottom(true);
+                    }
+                  }}>
+                  {consent.body}
+                </div>
+                {!scrolledToBottom && (
+                  <div className="text-xs text-orange-600 font-medium">Scroll to bottom to enable signing</div>
+                )}
+                {scrolledToBottom && (
+                  <div className="text-xs text-green-600 font-medium">✓ Consent text reviewed</div>
+                )}
+
+                {/* Patient signature */}
+                <div className={"rounded border-2 p-3 " + (consentSigs.patient ? "border-green-300 bg-green-50" : "border-gray-200 bg-white")}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-semibold text-gray-700">Patient Signature</div>
+                    {consentSigs.patient && <div className="text-xs text-green-600 font-medium">SIGNED ✓</div>}
+                  </div>
+                  {consentSigs.patient && (
+                    <img src={consentSigs.patient} className="w-full h-24 object-contain bg-white border border-gray-200 rounded mb-2" alt="Patient signature" />
+                  )}
+                  <button
+                    onClick={function(){
+                      if (!scrolledToBottom) { flash("Scroll through consent text first", "err"); return; }
+                      setSigModalType("consent_patient");
+                      setTimeout(function() {
+                        var canvas = document.getElementById("sig-canvas");
+                        if (canvas) {
+                          var ctx = canvas.getContext("2d");
+                          ctx.fillStyle = "#ffffff";
+                          ctx.fillRect(0, 0, canvas.width, canvas.height);
+                          ctx.strokeStyle = "#000000";
+                          ctx.lineWidth = 2.5;
+                          ctx.lineCap = "round";
+                          ctx.lineJoin = "round";
+                        }
+                      }, 50);
+                    }}
+                    disabled={!scrolledToBottom}
+                    className={"w-full py-2 rounded text-sm font-medium " + (scrolledToBottom ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-400")}>
+                    {consentSigs.patient ? "Re-sign" : "Tap to sign"}
+                  </button>
+                </div>
+
+                {/* Witness */}
+                <div className={"rounded border-2 p-3 " + (consentSigs.witness ? "border-green-300 bg-green-50" : "border-gray-200 bg-white")}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-semibold text-gray-700">Witness</div>
+                    {consentSigs.witness && <div className="text-xs text-green-600 font-medium">SIGNED ✓</div>}
+                  </div>
+                  <input
+                    className={ic + " mb-2"}
+                    value={consentSigs.witnessName}
+                    onChange={function(e){setConsentSigs(function(s){return Object.assign({}, s, {witnessName: e.target.value})})}}
+                    placeholder="Witness name (clinic staff)"
+                  />
+                  {consentSigs.witness && (
+                    <img src={consentSigs.witness} className="w-full h-24 object-contain bg-white border border-gray-200 rounded mb-2" alt="Witness signature" />
+                  )}
+                  <button
+                    onClick={function(){
+                      if (!consentSigs.witnessName.trim()) { flash("Enter witness name first", "err"); return; }
+                      setSigModalType("consent_witness");
+                      setTimeout(function() {
+                        var canvas = document.getElementById("sig-canvas");
+                        if (canvas) {
+                          var ctx = canvas.getContext("2d");
+                          ctx.fillStyle = "#ffffff";
+                          ctx.fillRect(0, 0, canvas.width, canvas.height);
+                          ctx.strokeStyle = "#000000";
+                          ctx.lineWidth = 2.5;
+                          ctx.lineCap = "round";
+                          ctx.lineJoin = "round";
+                        }
+                      }, 50);
+                    }}
+                    className="w-full py-2 rounded text-sm font-medium bg-blue-600 text-white">
+                    {consentSigs.witness ? "Re-sign" : "Tap to sign"}
+                  </button>
+                </div>
+
+                <button
+                  onClick={saveConsent}
+                  disabled={!canSave}
+                  className={"w-full py-3 rounded-lg text-base font-semibold " + (canSave ? "bg-green-600 text-white" : "bg-gray-200 text-gray-400")}>
+                  {canSave ? "Save Consent" : "Complete all fields to save"}
+                </button>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* ========== ASSESS TAB ========== */}
       {view === "form" && (
         <div className="p-4 space-y-3">
@@ -1038,7 +1786,41 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               {/* D0: Full intake */}
               {form.visitType === "D0" && (
                 <div className="space-y-3">
+                  <div className="bg-purple-50 border border-purple-200 rounded p-3">
+                    <div className="text-xs font-semibold text-purple-700 mb-1">DAY-OF-PROCEDURE NOTE (clinician adds at D0)</div>
+                    <div className="text-xs text-purple-600 mb-2">Brief subjective added by clinician on day of procedure. Will prepend to op note.</div>
+                    <textarea className={ic} rows="2" value={form.procedureDaySubjective} onChange={function(e){set("procedureDaySubjective",e.target.value)}} placeholder="e.g. Patient presents today for scheduled NS100 implantation. Pain remains 7/10. No interval changes. Ready to proceed." />
+                  </div>
+
                   <div><label className={lc}>Referring Provider</label><input className={ic} value={form.referringProvider} onChange={function(e){set("referringProvider",e.target.value)}} placeholder="Dr. Smith" /></div>
+
+                  <div className="bg-gray-50 rounded p-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-2">PATIENT CONTACT (for requisition form)</div>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <div><label className={lc}>DOB</label><input className={ic} value={form.dob} onChange={function(e){set("dob",e.target.value)}} placeholder="MM/DD/YYYY" /></div>
+                      <div><label className={lc}>Phone</label><input className={ic} type="tel" value={form.phone} onChange={function(e){set("phone",e.target.value)}} placeholder="555-555-5555" /></div>
+                    </div>
+                    <input className={ic + " mb-2"} value={form.address} onChange={function(e){set("address",e.target.value)}} placeholder="Street address" />
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      <input className={ic} value={form.city} onChange={function(e){set("city",e.target.value)}} placeholder="City" />
+                      <input className={ic} value={form.state} onChange={function(e){set("state",e.target.value)}} placeholder="State" />
+                      <input className={ic} value={form.zip} onChange={function(e){set("zip",e.target.value)}} placeholder="Zip" />
+                    </div>
+                    <input className={ic} type="email" value={form.email} onChange={function(e){set("email",e.target.value)}} placeholder="Email (optional)" />
+                  </div>
+
+                  <div className="bg-gray-50 rounded p-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-2">INSURANCE (snap Medicare card in Photos tab to auto-fill)</div>
+                    <input className={ic + " mb-2"} value={form.insuranceName} onChange={function(e){set("insuranceName",e.target.value)}} placeholder="Insurance name (e.g. Medicare Part B)" />
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <input className={ic} value={form.memberId} onChange={function(e){set("memberId",e.target.value)}} placeholder="Member ID" />
+                      <input className={ic} value={form.groupNum} onChange={function(e){set("groupNum",e.target.value)}} placeholder="Group #" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input className={ic} value={form.effectiveDate} onChange={function(e){set("effectiveDate",e.target.value)}} placeholder="Effective date" />
+                      <input className={ic} value={form.insuredName} onChange={function(e){set("insuredName",e.target.value)}} placeholder="Insured (if not patient)" />
+                    </div>
+                  </div>
 
                   <div className="bg-gray-50 rounded p-3">
                     <div className="text-xs font-semibold text-gray-500 mb-2">PAIN</div>
@@ -1104,6 +1886,60 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   </div>
 
                   <div className="bg-gray-50 rounded p-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-2">SELF-REPORT EXAM (phone intake, no-touch)</div>
+
+                    <div className="space-y-2">
+                      <div>
+                        <label className={lc}>Any ulcers or wounds on feet or hands?</label>
+                        <div className="flex gap-2">
+                          <select className={ic + " w-20"} value={form.srWounds} onChange={function(e){set("srWounds",e.target.value)}}><option>No</option><option>Yes</option></select>
+                          {form.srWounds === "Yes" && <input className={ic + " flex-1"} value={form.srWoundsLocation} onChange={function(e){set("srWoundsLocation",e.target.value)}} placeholder="Where?" />}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={lc}>Any balance issues or falls?</label>
+                        <div className="flex gap-2">
+                          <select className={ic + " w-20"} value={form.srBalance} onChange={function(e){set("srBalance",e.target.value)}}><option>No</option><option>Yes</option></select>
+                          {form.srBalance === "Yes" && <input className={ic + " flex-1"} value={form.srBalanceDetail} onChange={function(e){set("srBalanceDetail",e.target.value)}} placeholder="Details" />}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={lc}>Any swelling in arms or legs?</label>
+                        <div className="flex gap-2">
+                          <select className={ic + " w-20"} value={form.srSwelling} onChange={function(e){set("srSwelling",e.target.value)}}><option>No</option><option>Yes</option></select>
+                          {form.srSwelling === "Yes" && <input className={ic + " flex-1"} value={form.srSwellingLocation} onChange={function(e){set("srSwellingLocation",e.target.value)}} placeholder="Where?" />}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={lc}>Any increased work of breathing?</label>
+                        <div className="flex gap-2">
+                          <select className={ic + " w-20"} value={form.srBreathing} onChange={function(e){set("srBreathing",e.target.value)}}><option>No</option><option>Yes</option></select>
+                          {form.srBreathing === "Yes" && <input className={ic + " flex-1"} value={form.srBreathingDetail} onChange={function(e){set("srBreathingDetail",e.target.value)}} placeholder="Details" />}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={lc}>Any awareness of your heart (racing, pounding)?</label>
+                        <div className="flex gap-2">
+                          <select className={ic + " w-20"} value={form.srHeartAwareness} onChange={function(e){set("srHeartAwareness",e.target.value)}}><option>No</option><option>Yes</option></select>
+                          {form.srHeartAwareness === "Yes" && <input className={ic + " flex-1"} value={form.srHeartAwarenessDetail} onChange={function(e){set("srHeartAwarenessDetail",e.target.value)}} placeholder="Details" />}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={lc}>Any known rhythm problems (AFib, arrhythmia)?</label>
+                        <div className="flex gap-2">
+                          <select className={ic + " w-20"} value={form.srRhythm} onChange={function(e){set("srRhythm",e.target.value)}}><option>No</option><option>Yes</option></select>
+                          {form.srRhythm === "Yes" && <input className={ic + " flex-1"} value={form.srRhythmDetail} onChange={function(e){set("srRhythmDetail",e.target.value)}} placeholder="Details" />}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded p-3">
                     <div className="text-xs font-semibold text-gray-500 mb-2">DIAGNOSIS and MEDICAL NECESSITY</div>
                     <div className="grid grid-cols-2 gap-2 mb-2">
                       <div><label className={lc}>Pain duration</label><input className={ic} type="number" value={form.painDuration} onChange={function(e){set("painDuration",e.target.value)}} /></div>
@@ -1127,7 +1963,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   </div>
 
                   <div className="bg-gray-50 rounded p-3">
-                    <div className="text-xs font-semibold text-gray-500 mb-2">DEVICE IMPEDANCE (at placement)</div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs font-semibold text-gray-500">DEVICE IMPEDANCE (at placement)</div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-gray-500">Side:</label>
+                        <select className={ic + " w-20"} value={form.implantSide} onChange={function(e){set("implantSide",e.target.value)}}>
+                          <option>Right</option>
+                          <option>Left</option>
+                        </select>
+                      </div>
+                    </div>
                     <div className="grid grid-cols-3 gap-2">
                       <div className="text-xs font-medium text-gray-500 text-center">Trigeminal</div>
                       <div className="text-xs font-medium text-gray-500 text-center">C2</div>
@@ -1235,6 +2080,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 <button onClick={saveDraft} className="flex-1 py-2.5 bg-yellow-500 text-white rounded-lg text-sm font-medium">{form.visitType === "D0" ? "Save Draft (phone intake)" : "Save Progress"}</button>
                 <button onClick={function(){setFormSection("sensory")}} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">Continue to Sensory</button>
               </div>
+              {form.visitType === "D0" && (
+                <button onClick={generatePreauth} disabled={preauthGenerating} className={"w-full py-2.5 rounded-lg text-sm font-medium mt-2 " + (preauthGenerating ? "bg-gray-300 text-gray-500" : "bg-purple-600 text-white")}>
+                  {preauthGenerating ? "Generating..." : "Generate Preauth Packet (H&P + LOMN → Biller)"}
+                </button>
+              )}
             </div>
           )}
 
@@ -1449,6 +2299,55 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               );})}
             </div>
           )}
+        </div>
+      )}
+      {/* ========== FLOATING SUBMIT BUTTON ========== */}
+      {form.patientId && ["consent","form","photos"].indexOf(view) >= 0 && (
+        <div className="fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2">
+          {msg.text && (
+            <div className={"px-3 py-2 rounded-lg shadow-lg text-xs font-medium max-w-xs " +
+              (msg.type === "err" ? "bg-red-600 text-white" :
+               msg.type === "warn" ? "bg-yellow-500 text-white" :
+               "bg-green-600 text-white")}>
+              {msg.text}
+            </div>
+          )}
+          <button onClick={trySubmit} disabled={submitting}
+            className={"px-5 py-3 rounded-full shadow-lg font-semibold text-sm text-white " + (submitting ? "bg-gray-400" : "bg-green-600 active:bg-green-700")}>
+            {submitting ? "Submitting..." : "Submit " + form.visitType}
+          </button>
+        </div>
+      )}
+
+      {/* ========== SIGNATURE MODAL ========== */}
+      {sigModalType && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" onClick={function(e){if(e.target===e.currentTarget)setSigModalType(null)}}>
+          <div className="bg-white rounded-lg max-w-lg w-full p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-gray-800">{(PHOTO_TYPES.find(function(t){return t.key===sigModalType})||{}).label}</div>
+              <button onClick={function(){setSigModalType(null)}} className="text-gray-400 text-xl px-2">×</button>
+            </div>
+            <div className="text-xs text-gray-500">Sign in the box below. Use finger on phone/tablet or mouse on desktop.</div>
+            <canvas
+              id="sig-canvas"
+              width="600"
+              height="250"
+              className="w-full border-2 border-gray-300 rounded bg-white"
+              style={{touchAction: "none"}}
+              onMouseDown={sigStart}
+              onMouseMove={sigMove}
+              onMouseUp={sigEnd}
+              onMouseLeave={sigEnd}
+              onTouchStart={sigStart}
+              onTouchMove={sigMove}
+              onTouchEnd={sigEnd}
+            />
+            <div className="text-xs text-gray-400 text-center">{form.patientId} · {new Date().toLocaleString()}</div>
+            <div className="flex gap-2">
+              <button onClick={sigClear} className="flex-1 py-2 bg-gray-200 text-gray-700 rounded text-sm font-medium">Clear</button>
+              <button onClick={sigSave} className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-medium">Save Signature</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
