@@ -254,7 +254,8 @@ function App() {
   const [referralsLoading, setReferralsLoading] = useState(false);
   const [role, setRole] = useState(localStorage.getItem("dncRole") || "ma");
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
-  const [dupModal, setDupModal] = useState(null); // {existing: {...}} when a duplicate referral is detected
+  const [dupModal, setDupModal] = useState(null); // {existing: {...}, source} when a duplicate referral is detected
+  const [parseQueue, setParseQueue] = useState([]); // [{id, status, parsed, error, fileName}] for multi-photo batch parse
 
   function generatePatientId() {
     var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -357,14 +358,36 @@ function App() {
     setReferralsLoading(false);
   }
 
-  async function addReferral(forceAdd) {
-    if (!newRef.name.trim() || !newRef.phone.trim()) { flash("Name and phone required", "err"); return; }
+  async function addReferral(forceAdd, source) {
+    // source: undefined = form path (uses newRef), or {queueId} = queue path
+    var data;
+    if (source && source.queueId != null) {
+      var item = parseQueue.find(function(q){ return q.id === source.queueId; });
+      if (!item || item.status !== "parsed" || !item.parsed) { flash("Queue item not ready", "err"); return; }
+      var p = item.parsed;
+      // Rebuild notes in same format parseReferralPhoto uses (CONTRA/Ins/Sec markers)
+      var parts = [];
+      if (Array.isArray(p.contraindications) && p.contraindications.length) {
+        parts.push("CONTRA: " + p.contraindications.join(", "));
+      }
+      if (p.insurancePrimary || p.memberIdPrimary) {
+        parts.push("Ins: " + (p.insurancePrimary || "Primary") + (p.memberIdPrimary ? " #" + p.memberIdPrimary : ""));
+      }
+      if (p.insuranceSecondary || p.memberIdSecondary) {
+        parts.push("Sec: " + (p.insuranceSecondary || "Secondary") + (p.memberIdSecondary ? " #" + p.memberIdSecondary : ""));
+      }
+      if (p.notes) parts.push(p.notes);
+      data = { name: p.name || "", dob: p.dob || "", phone: p.phone || "", provider: p.provider || "", notes: parts.join(" | ") };
+    } else {
+      data = { name: newRef.name, dob: newRef.dob, phone: newRef.phone, provider: newRef.provider, notes: newRef.notes };
+    }
+    if (!data.name.trim() || !data.phone.trim()) { flash("Name and phone required", "err"); return; }
     if (!sheetUrl) { flash("Set database URL first", "err"); return; }
     try {
       var payload = {
         _action: "addReferral",
-        patientName: newRef.name, dob: newRef.dob, phone: newRef.phone,
-        referringProvider: newRef.provider, notes: newRef.notes
+        patientName: data.name, dob: data.dob, phone: data.phone,
+        referringProvider: data.provider, notes: data.notes
       };
       if (forceAdd) payload.forceAdd = true;
       var resp = await fetch(sheetUrl, {
@@ -374,11 +397,15 @@ function App() {
       var result = await resp.json();
       if (result.status === "ok") {
         flash("Referral added");
-        setNewRef({ name: "", dob: "", phone: "", provider: "", notes: "" });
+        if (source && source.queueId != null) {
+          setParseQueue(function(q){ return q.filter(function(x){ return x.id !== source.queueId; }); });
+        } else {
+          setNewRef({ name: "", dob: "", phone: "", provider: "", notes: "" });
+        }
         setDupModal(null);
         loadReferrals();
       } else if (result.status === "duplicate") {
-        setDupModal({ existing: result.existing });
+        setDupModal({ existing: result.existing, source: source });
       } else { flash("Error: " + (result.message || ""), "err"); }
     } catch(e) { flash("Error: " + e.toString(), "err"); }
   }
@@ -397,6 +424,34 @@ function App() {
   function startIntakeFromReferral(ref) {
     set("referringProvider", ref.provider || "");
     setPatientName(ref.name || "");
+    // Hydrate contact fields directly from the throughput columns
+    if (ref.phone) set("phone", ref.phone);
+    if (ref.dob) set("dob", ref.dob);
+    // Parse insurance back out of the notes string we built during parseReferralPhoto.
+    // Format: "CONTRA: ... | Ins: Medicare Part B #1EG4... | Sec: BCBS #ABC... | reason"
+    // This is a temporary ugliness until Supabase gives us real insurance columns.
+    function extractInsurance(prefix, notes) {
+      var re = new RegExp("\\b" + prefix + ":\\s*([^|]+)", "i");
+      var m = re.exec(notes);
+      if (!m) return null;
+      var chunk = m[1].trim();
+      var hashIdx = chunk.indexOf("#");
+      if (hashIdx >= 0) {
+        return { name: chunk.substring(0, hashIdx).trim(), memberId: chunk.substring(hashIdx + 1).trim() };
+      }
+      return { name: chunk, memberId: "" };
+    }
+    var notesStr = ref.notes || "";
+    var primary = extractInsurance("Ins", notesStr);
+    var secondary = extractInsurance("Sec", notesStr);
+    if (primary) {
+      if (primary.name) set("insuranceName", primary.name);
+      if (primary.memberId) set("memberId", primary.memberId);
+    }
+    if (secondary) {
+      if (secondary.name) set("insuranceName2", secondary.name);
+      if (secondary.memberId) set("memberId2", secondary.memberId);
+    }
     var id = generatePatientId();
     setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake" }); });
     // Save to directory
@@ -412,7 +467,13 @@ function App() {
     }
     setView("form");
     setFormSection("intake");
-    flash("Loaded referral for " + ref.name + " as " + id);
+    var hydrated = [];
+    if (primary) hydrated.push("primary ins");
+    if (secondary) hydrated.push("secondary ins");
+    if (ref.phone) hydrated.push("phone");
+    if (ref.dob) hydrated.push("DOB");
+    var hydratedMsg = hydrated.length ? " (hydrated: " + hydrated.join(", ") + ")" : "";
+    flash("Loaded referral for " + ref.name + " as " + id + hydratedMsg);
   }
 
   async function parseMedicareCard(base64Data, isSecondary) {
@@ -519,14 +580,83 @@ function App() {
   }
 
   function handleReferralPhotoCapture(e) {
-    var file = e.target.files[0];
-    if (!file) return;
-    var reader = new FileReader();
-    reader.onload = function(ev) {
-      parseReferralPhoto(ev.target.result);
-    };
-    reader.onerror = function() { flash("Failed to read photo file, try again", "err"); };
-    reader.readAsDataURL(file);
+    var files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    // Single-file path: use existing flow that pre-fills the NEW REFERRAL form
+    if (files.length === 1) {
+      var reader = new FileReader();
+      reader.onload = function(ev) { parseReferralPhoto(ev.target.result); };
+      reader.onerror = function() { flash("Failed to read photo file, try again", "err"); };
+      reader.readAsDataURL(files[0]);
+      e.target.value = ""; // allow re-selection of same file
+      return;
+    }
+
+    // Multi-file path: parse all into a queue, user reviews and adds each
+    var now = Date.now();
+    var newItems = files.map(function(file, i) {
+      return { id: now + i, status: "parsing", parsed: null, error: "", fileName: file.name || ("Photo " + (i+1)) };
+    });
+    setParseQueue(function(q){ return q.concat(newItems); });
+    flash("Parsing " + files.length + " referrals...");
+
+    files.forEach(function(file, i) {
+      var qid = newItems[i].id;
+      var reader = new FileReader();
+      reader.onload = function(ev) { parseReferralToQueue(qid, ev.target.result); };
+      reader.onerror = function() {
+        setParseQueue(function(q){
+          return q.map(function(item){
+            return item.id === qid ? Object.assign({}, item, { status: "error", error: "Read failed" }) : item;
+          });
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = ""; // allow re-selection
+  }
+
+  async function parseReferralToQueue(queueId, base64Data) {
+    if (!sheetUrl) {
+      setParseQueue(function(q){
+        return q.map(function(item){
+          return item.id === queueId ? Object.assign({}, item, { status: "error", error: "No script URL" }) : item;
+        });
+      });
+      return;
+    }
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "parseReferralPhoto", imageData: base64Data })
+      });
+      var result = await resp.json();
+      if (result.status === "ok" && result.parsed) {
+        setParseQueue(function(q){
+          return q.map(function(item){
+            return item.id === queueId ? Object.assign({}, item, { status: "parsed", parsed: result.parsed }) : item;
+          });
+        });
+      } else {
+        setParseQueue(function(q){
+          return q.map(function(item){
+            return item.id === queueId ? Object.assign({}, item, { status: "error", error: result.message || "parse failed" }) : item;
+          });
+        });
+      }
+    } catch(e) {
+      setParseQueue(function(q){
+        return q.map(function(item){
+          return item.id === queueId ? Object.assign({}, item, { status: "error", error: e.toString() }) : item;
+        });
+      });
+    }
+  }
+
+  function skipFromQueue(queueId) {
+    setParseQueue(function(q){ return q.filter(function(item){ return item.id !== queueId; }); });
   }
 
   async function parseTranscript() {
@@ -1736,9 +1866,60 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             <div className="bg-green-50 rounded p-3 border border-green-200 space-y-2">
               <div className="text-xs font-semibold text-green-700">NEW REFERRAL</div>
               <label className="block w-full py-2 bg-blue-600 text-white rounded text-sm font-medium text-center cursor-pointer">
-                Snap Referral Sheet
-                <input type="file" accept="image/*" onChange={handleReferralPhotoCapture} className="hidden" />
+                Snap Referral Sheet(s) — pick one or many
+                <input type="file" accept="image/*" multiple onChange={handleReferralPhotoCapture} className="hidden" />
               </label>
+
+              {/* Parse queue (batch mode) */}
+              {parseQueue.length > 0 && (
+                <div className="bg-white rounded p-2 border border-blue-200 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <div className="text-xs font-semibold text-blue-700">PARSE QUEUE ({parseQueue.length})</div>
+                    <button onClick={function(){setParseQueue([])}} className="text-xs text-gray-400">Clear all</button>
+                  </div>
+                  {parseQueue.map(function(item) {
+                    var p = item.parsed || {};
+                    var hasContra = Array.isArray(p.contraindications) && p.contraindications.length > 0;
+                    var cardBorder = item.status === "error" ? "border-red-300 bg-red-50"
+                      : item.status === "parsing" ? "border-gray-200 bg-gray-50"
+                      : hasContra ? "border-red-400 bg-red-50"
+                      : "border-gray-200 bg-white";
+                    return (
+                      <div key={item.id} className={"rounded p-2 border " + cardBorder}>
+                        {item.status === "parsing" && (
+                          <div className="flex justify-between items-center">
+                            <div className="text-xs text-gray-500">Parsing {item.fileName}...</div>
+                            <button onClick={function(){skipFromQueue(item.id)}} className="text-xs text-gray-400">×</button>
+                          </div>
+                        )}
+                        {item.status === "error" && (
+                          <div className="flex justify-between items-center">
+                            <div className="text-xs text-red-600">Parse failed: {item.error}</div>
+                            <button onClick={function(){skipFromQueue(item.id)}} className="text-xs text-gray-400">×</button>
+                          </div>
+                        )}
+                        {item.status === "parsed" && (
+                          <div>
+                            {hasContra && (
+                              <div className="text-xs font-bold text-red-700 mb-1">‼ {p.contraindications.join(", ")}</div>
+                            )}
+                            <div className="font-medium text-sm text-gray-900">{p.name || "(no name)"}</div>
+                            <div className="text-xs text-gray-500">{p.phone || "(no phone)"}{p.provider ? " | Ref: " + p.provider : ""}</div>
+                            {(p.insurancePrimary || p.memberIdPrimary) && (
+                              <div className="text-xs text-gray-500">Ins: {p.insurancePrimary || ""}{p.memberIdPrimary ? " #" + p.memberIdPrimary : ""}</div>
+                            )}
+                            <div className="flex gap-2 mt-2">
+                              <button onClick={function(){addReferral(false, {queueId: item.id})}} className="flex-1 py-1 bg-green-600 text-white rounded text-xs font-medium">Add</button>
+                              <button onClick={function(){skipFromQueue(item.id)}} className="flex-1 py-1 bg-gray-200 text-gray-600 rounded text-xs font-medium">Skip</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="text-xs text-gray-500 text-center">Or enter manually below</div>
               <input className={ic} value={newRef.name} onChange={function(e){setNewRef(Object.assign({}, newRef, {name:e.target.value}))}} placeholder="Patient name *" />
               <div className="grid grid-cols-2 gap-2">
@@ -1823,7 +2004,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   {ref.dncId && <div className="text-xs text-blue-500">ID: {ref.dncId}</div>}
                 <div className="flex gap-2 pt-1">
                   {!ref.dncId && (
-                    <button onClick={function(){startIntakeFromReferral({name: ref.name, provider: ref.provider, rowIndex: ref.rowIndex})}}
+                    <button onClick={function(){startIntakeFromReferral(ref)}}
                       className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs font-medium">Start Intake</button>
                   )}
                   {ref.dncId && !ref.called && (
@@ -2740,7 +2921,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             <div className="flex gap-2">
               <button onClick={function(){setDupModal(null)}}
                 className="flex-1 py-2 bg-gray-100 text-gray-700 text-sm rounded font-medium">Cancel</button>
-              <button onClick={function(){addReferral(true)}}
+              <button onClick={function(){addReferral(true, dupModal.source)}}
                 className="flex-1 py-2 bg-orange-100 text-orange-700 text-sm rounded font-medium">Add Anyway</button>
             </div>
           </div>
