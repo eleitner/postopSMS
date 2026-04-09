@@ -254,6 +254,7 @@ function App() {
   const [referralsLoading, setReferralsLoading] = useState(false);
   const [role, setRole] = useState(localStorage.getItem("dncRole") || "ma");
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
+  const [dupModal, setDupModal] = useState(null); // {existing: {...}} when a duplicate referral is detected
 
   function generatePatientId() {
     var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -356,23 +357,28 @@ function App() {
     setReferralsLoading(false);
   }
 
-  async function addReferral() {
+  async function addReferral(forceAdd) {
     if (!newRef.name.trim() || !newRef.phone.trim()) { flash("Name and phone required", "err"); return; }
     if (!sheetUrl) { flash("Set database URL first", "err"); return; }
     try {
+      var payload = {
+        _action: "addReferral",
+        patientName: newRef.name, dob: newRef.dob, phone: newRef.phone,
+        referringProvider: newRef.provider, notes: newRef.notes
+      };
+      if (forceAdd) payload.forceAdd = true;
       var resp = await fetch(sheetUrl, {
         method: "POST",
-        body: JSON.stringify({
-          _action: "addReferral",
-          patientName: newRef.name, dob: newRef.dob, phone: newRef.phone,
-          referringProvider: newRef.provider, notes: newRef.notes
-        })
+        body: JSON.stringify(payload)
       });
       var result = await resp.json();
       if (result.status === "ok") {
         flash("Referral added");
         setNewRef({ name: "", dob: "", phone: "", provider: "", notes: "" });
+        setDupModal(null);
         loadReferrals();
+      } else if (result.status === "duplicate") {
+        setDupModal({ existing: result.existing });
       } else { flash("Error: " + (result.message || ""), "err"); }
     } catch(e) { flash("Error: " + e.toString(), "err"); }
   }
@@ -484,12 +490,26 @@ function App() {
       var result = await resp.json();
       if (result.status === "ok" && result.parsed) {
         var p = result.parsed;
+        // Fold insurance info and contraindications into notes so they're visible
+        // on the referral card and carried into the throughput row's Notes column
+        var parts = [];
+        if (Array.isArray(p.contraindications) && p.contraindications.length) {
+          parts.push("CONTRA: " + p.contraindications.join(", "));
+        }
+        if (p.insurancePrimary || p.memberIdPrimary) {
+          parts.push("Ins: " + (p.insurancePrimary || "Primary") + (p.memberIdPrimary ? " #" + p.memberIdPrimary : ""));
+        }
+        if (p.insuranceSecondary || p.memberIdSecondary) {
+          parts.push("Sec: " + (p.insuranceSecondary || "Secondary") + (p.memberIdSecondary ? " #" + p.memberIdSecondary : ""));
+        }
+        if (p.notes) parts.push(p.notes);
+        var combinedNotes = parts.join(" | ");
         setNewRef({
           name: p.name || "",
           dob: p.dob || "",
           phone: p.phone || "",
           provider: p.provider || "",
-          notes: p.notes || ""
+          notes: combinedNotes
         });
         flash("Parsed! Review and tap Add Referral");
       } else {
@@ -1727,7 +1747,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               </div>
               <input className={ic} value={newRef.provider} onChange={function(e){setNewRef(Object.assign({}, newRef, {provider:e.target.value}))}} placeholder="Referring provider" />
               <input className={ic} value={newRef.notes} onChange={function(e){setNewRef(Object.assign({}, newRef, {notes:e.target.value}))}} placeholder="Notes (optional)" />
-              <button onClick={addReferral} className="w-full py-2 bg-green-600 text-white rounded text-sm font-medium">Add Referral</button>
+              <button onClick={function(){addReferral()}} className="w-full py-2 bg-green-600 text-white rounded text-sm font-medium">Add Referral</button>
             </div>
           )}
 
@@ -1741,23 +1761,66 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             <div className="text-center text-gray-400 text-sm py-6">No referrals. Tap Refresh to load from database.</div>
           )}
 
-          {referrals.map(function(ref, idx) {
-            var days = ref.referralDate ? Math.floor((Date.now() - new Date(ref.referralDate).getTime()) / 86400000) : 0;
-            var isStale = days >= 2 && !ref.called;
-            var statusColor = ref.status === "Complete" ? "text-green-600" :
-              ref.status === "Intake Complete" ? "text-blue-600" :
-              isStale ? "text-red-600" : "text-gray-500";
-            return (
-              <div key={idx} className={"rounded border p-3 space-y-1 " + (isStale ? "border-red-300 bg-red-50" : "border-gray-200 bg-white")}>
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-sm text-gray-900">{ref.name || "Unknown"}</div>
-                  <div className={"text-xs font-medium " + statusColor}>{ref.status || "New"}</div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="text-xs text-gray-500">{ref.provider ? "Ref: " + ref.provider : ""}{ref.phone ? " | " + ref.phone : ""}</div>
-                  <div className="text-xs text-gray-400">{days > 0 ? days + "d ago" : "Today"}</div>
-                </div>
-                {ref.dncId && <div className="text-xs text-blue-500">ID: {ref.dncId}</div>}
+          {(function(){
+            // Classify each referral, then sort: non-red first (oldest first), red at bottom
+            var classified = referrals.map(function(ref) {
+              var notesStr = String(ref.notes || "");
+              var notesLower = notesStr.toLowerCase();
+              // Contraindication detection (red = ineligible)
+              var contraKeywords = ["pacemaker","defibrillator","icd","aicd","loop recorder","spinal cord stim","deep brain stim","bladder stim","pregnan","hemophilia","dementia"];
+              var contraMatch = /CONTRA:\s*([^|]+)/i.exec(notesStr);
+              var contraText = "";
+              if (contraMatch) {
+                contraText = contraMatch[1].trim();
+              } else {
+                var hits = contraKeywords.filter(function(kw){ return notesLower.indexOf(kw) >= 0; });
+                if (hits.length) contraText = hits.join(", ");
+              }
+              // Long preauth detection (yellow = Medicare + secondary / Part D / supplement)
+              var longPreauthKeywords = ["part d","medigap","supplement","medicare advantage","ma plan","dual","coinsurance"];
+              var hasSecondaryInsurance = /\bSec:/i.test(notesStr);
+              var longPreauthKw = longPreauthKeywords.some(function(kw){ return notesLower.indexOf(kw) >= 0; });
+              var hasLongPreauth = hasSecondaryInsurance || longPreauthKw;
+              return { ref: ref, contraText: contraText, hasContra: !!contraText, hasLongPreauth: hasLongPreauth };
+            });
+            // Partition: non-red first (server-side sort is already oldest-first), red at bottom
+            var nonRed = classified.filter(function(c){ return !c.hasContra; });
+            var red = classified.filter(function(c){ return c.hasContra; });
+            var ordered = nonRed.concat(red);
+
+            return ordered.map(function(c, idx) {
+              var ref = c.ref;
+              var days = ref.referralDate ? Math.floor((Date.now() - new Date(ref.referralDate).getTime()) / 86400000) : 0;
+              var isStale = days >= 2 && !ref.called && !c.hasContra;
+              var statusColor = ref.status === "Complete" ? "text-green-600" :
+                ref.status === "Intake Complete" ? "text-blue-600" :
+                c.hasContra ? "text-red-700" :
+                isStale ? "text-orange-600" : "text-gray-500";
+              // Precedence: red (ineligible) > yellow (long preauth) > default
+              var cardClass = c.hasContra ? "border-red-400 bg-red-50"
+                : c.hasLongPreauth ? "border-amber-400 bg-amber-50"
+                : "border-gray-200 bg-white";
+              return (
+                <div key={idx} className={"rounded border p-3 space-y-1 " + cardClass}>
+                  {c.hasContra && (
+                    <div className="bg-red-200 text-red-900 rounded px-2 py-1 text-xs font-bold mb-1">
+                      ‼ INELIGIBLE: {c.contraText}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="font-medium text-sm text-gray-900 truncate">{ref.name || "Unknown"}</div>
+                      {c.hasLongPreauth && !c.hasContra && (
+                        <span className="text-xs bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">⏱ Long preauth</span>
+                      )}
+                    </div>
+                    <div className={"text-xs font-medium ml-2 " + statusColor}>{ref.status || "New"}</div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-gray-500">{ref.provider ? "Ref: " + ref.provider : ""}{ref.phone ? " | " + ref.phone : ""}</div>
+                    <div className={"text-xs " + (isStale ? "text-orange-600 font-bold" : "text-gray-400")}>{days > 0 ? days + "d ago" : "Today"}</div>
+                  </div>
+                  {ref.dncId && <div className="text-xs text-blue-500">ID: {ref.dncId}</div>}
                 <div className="flex gap-2 pt-1">
                   {!ref.dncId && (
                     <button onClick={function(){startIntakeFromReferral({name: ref.name, provider: ref.provider, rowIndex: ref.rowIndex})}}
@@ -1771,10 +1834,18 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     <button onClick={function(){setForm(function(f){return Object.assign({}, f, {patientId: ref.dncId})}); setView("form"); loadDraft(ref.dncId);}}
                       className="flex-1 py-1.5 bg-gray-200 text-gray-700 rounded text-xs font-medium">Open Draft</button>
                   )}
+                  <button onClick={function(){
+                    var reason = prompt("Remove " + (ref.name || "this referral") + " from list?\n\nEnter reason (e.g. Withdrawn, Wrong patient, Duplicate, Patient seen elsewhere):");
+                    if (reason && reason.trim()) {
+                      updateReferralStatus(ref.rowIndex, "status", "Removed: " + reason.trim());
+                      flash("Removed from list");
+                    }
+                  }} className="px-2 py-1.5 bg-red-50 text-red-500 rounded text-xs font-medium">×</button>
                 </div>
               </div>
             );
-          })}
+          });
+          })()}
         </div>
       )}
 
@@ -2648,6 +2719,31 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             className={"px-5 py-3 rounded-full shadow-lg font-semibold text-sm text-white " + (submitting ? "bg-gray-400" : "bg-green-600 active:bg-green-700")}>
             {submitting ? "Submitting..." : "Submit " + form.visitType}
           </button>
+        </div>
+      )}
+
+      {/* ========== DUPLICATE REFERRAL MODAL ========== */}
+      {dupModal && dupModal.existing && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(){setDupModal(null)}}>
+          <div className="bg-white rounded-lg p-4 max-w-md w-full" onClick={function(e){e.stopPropagation()}}>
+            <div className="text-sm font-semibold text-orange-600 mb-2">Possible duplicate referral</div>
+            <div className="text-xs text-gray-700 mb-3">
+              A referral with the same name and phone number already exists:
+            </div>
+            <div className="bg-gray-50 rounded p-3 mb-3 text-xs">
+              <div className="font-semibold text-gray-800">{dupModal.existing.name}</div>
+              <div className="text-gray-600">{dupModal.existing.phone}</div>
+              <div className="text-gray-500 mt-1">Status: {dupModal.existing.status}</div>
+              {dupModal.existing.dncId && <div className="text-blue-500">ID: {dupModal.existing.dncId}</div>}
+              {dupModal.existing.referralDate && <div className="text-gray-400">Added: {new Date(dupModal.existing.referralDate).toLocaleDateString()}</div>}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={function(){setDupModal(null)}}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 text-sm rounded font-medium">Cancel</button>
+              <button onClick={function(){addReferral(true)}}
+                className="flex-1 py-2 bg-orange-100 text-orange-700 text-sm rounded font-medium">Add Anyway</button>
+            </div>
+          </div>
         </div>
       )}
 
