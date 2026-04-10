@@ -3304,6 +3304,24 @@ function AuthGate() {
   }
   window.__signOut = signOut;
 
+  function sendPasswordReset() {
+    if (!emailInput) {
+      setAuthError("Enter your email above first");
+      return;
+    }
+    setAuthError("");
+    firebase.auth().sendPasswordResetEmail(emailInput)
+      .then(function() {
+        setAuthError("Reset email sent to " + emailInput + ". Check inbox.");
+      })
+      .catch(function(e) {
+        var msg = e.message || "Reset failed";
+        if (e.code === "auth/user-not-found") msg = "No account for this email";
+        else if (e.code === "auth/invalid-email") msg = "Invalid email format";
+        setAuthError(msg);
+      });
+  }
+
   async function submitAccessRequest() {
     if (!emailInput || !requestName || !requestRole) {
       setAuthError("Email, name, and role required");
@@ -3381,12 +3399,20 @@ function AuthGate() {
               >
                 {signingIn ? "Signing in..." : "Sign in"}
               </button>
-              <button
-                onClick={function(){setRequestMode(true); setAuthError(""); setRequestSent(false)}}
-                className="w-full text-xs text-blue-600 underline mt-2"
-              >
-                Request access
-              </button>
+              <div className="flex justify-between items-center mt-2">
+                <button
+                  onClick={sendPasswordReset}
+                  className="text-xs text-blue-600 underline"
+                >
+                  Forgot password
+                </button>
+                <button
+                  onClick={function(){setRequestMode(true); setAuthError(""); setRequestSent(false)}}
+                  className="text-xs text-blue-600 underline"
+                >
+                  Request access
+                </button>
+              </div>
             </div>
           )}
           {requestMode && !requestSent && (
