@@ -3244,6 +3244,7 @@ function AuthGate() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [lastAttemptedEmail, setLastAttemptedEmail] = useState("");
 
   useEffect(function() {
     if (!__firebaseEnabled) {
@@ -3251,19 +3252,26 @@ function AuthGate() {
       return;
     }
     var unsub = firebase.auth().onAuthStateChanged(function(u) {
+      console.log("[auth] onAuthStateChanged fired. user=", u);
       if (u) {
         var email = (u.email || "").toLowerCase();
+        console.log("[auth] raw email from firebase:", u.email, "| normalized:", email);
+        setLastAttemptedEmail(u.email || "(no email returned)");
         var allowed = ALLOWED_EMAILS.map(function(e){return e.toLowerCase()});
+        console.log("[auth] allowlist:", allowed);
         if (allowed.indexOf(email) === -1) {
-          setAuthError("Access denied for " + email + ". Contact admin to add you to the allowlist.");
+          console.log("[auth] DENIED — email not in allowlist");
+          setAuthError("Access denied for [" + (u.email || "empty") + "]. Check console for details.");
           firebase.auth().signOut();
           setUser(null);
         } else {
+          console.log("[auth] ALLOWED — setting user");
           setUser(u);
           setAuthError("");
           window.__currentUser = u;
         }
       } else {
+        console.log("[auth] no user (signed out or never signed in)");
         setUser(null);
         window.__currentUser = null;
       }
@@ -3276,7 +3284,7 @@ function AuthGate() {
     setAuthError("");
     var provider = new firebase.auth.GoogleAuthProvider();
     firebase.auth().signInWithPopup(provider).catch(function(e) {
-      // popup-closed-by-user is harmless (user cancelled), don't show as error
+      console.log("[auth] signInWithPopup error:", e);
       if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
         setAuthError(e.message || "Sign-in failed");
       }
@@ -3315,6 +3323,9 @@ function AuthGate() {
             Sign in with Google
           </button>
           {authError && <div className="mt-3 text-xs text-red-600 text-center">{authError}</div>}
+          {lastAttemptedEmail && !authError && (
+            <div className="mt-3 text-xs text-gray-500 text-center">Last tried: {lastAttemptedEmail}</div>
+          )}
         </div>
       </div>
     );
