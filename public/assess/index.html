@@ -3228,7 +3228,7 @@ const ALLOWED_EMAILS = [
   "evan.leitner@gmail.com",
   "lindseyallannelson@gmail.com",
   "diabeticnerveclinic@gmail.com",
-  "bjafb1@gmail.com"
+  "bradley.burdick@huntington.com"
 ];
 
 // Initialize Firebase only if config is filled in
@@ -3244,7 +3244,9 @@ function AuthGate() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState("");
-  const [lastAttemptedEmail, setLastAttemptedEmail] = useState("");
+  const [emailInput, setEmailInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
 
   useEffect(function() {
     if (!__firebaseEnabled) {
@@ -3252,26 +3254,19 @@ function AuthGate() {
       return;
     }
     var unsub = firebase.auth().onAuthStateChanged(function(u) {
-      console.log("[auth] onAuthStateChanged fired. user=", u);
       if (u) {
         var email = (u.email || "").toLowerCase();
-        console.log("[auth] raw email from firebase:", u.email, "| normalized:", email);
-        setLastAttemptedEmail(u.email || "(no email returned)");
         var allowed = ALLOWED_EMAILS.map(function(e){return e.toLowerCase()});
-        console.log("[auth] allowlist:", allowed);
         if (allowed.indexOf(email) === -1) {
-          console.log("[auth] DENIED — email not in allowlist");
-          setAuthError("Access denied for [" + (u.email || "empty") + "]. Check console for details.");
+          setAuthError("Access denied for " + email + ". Contact admin.");
           firebase.auth().signOut();
           setUser(null);
         } else {
-          console.log("[auth] ALLOWED — setting user");
           setUser(u);
           setAuthError("");
           window.__currentUser = u;
         }
       } else {
-        console.log("[auth] no user (signed out or never signed in)");
         setUser(null);
         window.__currentUser = null;
       }
@@ -3281,14 +3276,21 @@ function AuthGate() {
   }, []);
 
   function signIn() {
+    if (!emailInput || !passwordInput) {
+      setAuthError("Enter email and password");
+      return;
+    }
     setAuthError("");
-    var provider = new firebase.auth.GoogleAuthProvider();
-    firebase.auth().signInWithPopup(provider).catch(function(e) {
-      console.log("[auth] signInWithPopup error:", e);
-      if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
-        setAuthError(e.message || "Sign-in failed");
-      }
-    });
+    setSigningIn(true);
+    firebase.auth().signInWithEmailAndPassword(emailInput, passwordInput)
+      .catch(function(e) {
+        var msg = e.message || "Sign-in failed";
+        if (e.code === "auth/wrong-password" || e.code === "auth/invalid-credential") msg = "Wrong password";
+        else if (e.code === "auth/user-not-found") msg = "No account for this email. Contact admin.";
+        else if (e.code === "auth/invalid-email") msg = "Invalid email format";
+        setAuthError(msg);
+      })
+      .finally(function() { setSigningIn(false); });
   }
 
   function signOut() {
@@ -3319,13 +3321,33 @@ function AuthGate() {
             <div className="text-lg font-semibold text-gray-800">Diabetic Nerve Clinic</div>
             <div className="text-xs text-gray-500 mt-1">Sign in to access the platform</div>
           </div>
-          <button onClick={signIn} className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">
-            Sign in with Google
-          </button>
+          <div className="space-y-2">
+            <input
+              type="email"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              placeholder="Email"
+              value={emailInput}
+              onChange={function(e){setEmailInput(e.target.value)}}
+              onKeyDown={function(e){if(e.key==="Enter")signIn()}}
+              autoFocus
+            />
+            <input
+              type="password"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              placeholder="Password"
+              value={passwordInput}
+              onChange={function(e){setPasswordInput(e.target.value)}}
+              onKeyDown={function(e){if(e.key==="Enter")signIn()}}
+            />
+            <button
+              onClick={signIn}
+              disabled={signingIn}
+              className={"w-full py-2.5 rounded-lg text-sm font-medium " + (signingIn ? "bg-gray-300 text-gray-500" : "bg-blue-600 text-white")}
+            >
+              {signingIn ? "Signing in..." : "Sign in"}
+            </button>
+          </div>
           {authError && <div className="mt-3 text-xs text-red-600 text-center">{authError}</div>}
-          {lastAttemptedEmail && !authError && (
-            <div className="mt-3 text-xs text-gray-500 text-center">Last tried: {lastAttemptedEmail}</div>
-          )}
         </div>
       </div>
     );
