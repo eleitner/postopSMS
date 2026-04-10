@@ -3228,7 +3228,7 @@ const ALLOWED_EMAILS = [
   "evan.leitner@gmail.com",
   "lindseyallannelson@gmail.com",
   "diabeticnerveclinic@gmail.com",
-"bjafb1@gmail.com"
+  "bjafb1@gmail.com"
 ];
 
 // Initialize Firebase only if config is filled in
@@ -3247,10 +3247,13 @@ function AuthGate() {
 
   useEffect(function() {
     if (!__firebaseEnabled) {
-      // No Firebase config = auth disabled (dev mode). Allow access.
       setLoading(false);
       return;
     }
+    // Handle redirect result on page load
+    firebase.auth().getRedirectResult().catch(function(e) {
+      setAuthError(e.message || "Sign-in failed");
+    });
     var unsub = firebase.auth().onAuthStateChanged(function(u) {
       if (u) {
         var email = (u.email || "").toLowerCase();
@@ -3276,7 +3279,7 @@ function AuthGate() {
   function signIn() {
     setAuthError("");
     var provider = new firebase.auth.GoogleAuthProvider();
-    firebase.auth().signInWithPopup(provider).catch(function(e) {
+    firebase.auth().signInWithRedirect(provider).catch(function(e) {
       setAuthError(e.message || "Sign-in failed");
     });
   }
