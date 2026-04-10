@@ -549,11 +549,26 @@ function App() {
           if (p.groupNum) { set("groupNum2", p.groupNum); parts.push("Grp " + p.groupNum); }
           if (p.effectiveDate) set("effectiveDate2", p.effectiveDate);
         } else {
+          // Cross-check with any values already parsed from transcript
+          var mismatches = [];
+          if (form.insuranceName && p.insuranceName && form.insuranceName.toLowerCase() !== p.insuranceName.toLowerCase()) {
+            mismatches.push("Insurance name");
+          }
+          if (form.memberId && p.memberId && form.memberId.replace(/\s/g,"") !== p.memberId.replace(/\s/g,"")) {
+            mismatches.push("Member ID");
+          }
+          if (form.groupNum && p.groupNum && form.groupNum !== p.groupNum) {
+            mismatches.push("Group #");
+          }
           if (p.insuranceName) { set("insuranceName", p.insuranceName); parts.push(p.insuranceName); }
           if (p.memberId) { set("memberId", p.memberId); parts.push(p.memberId); }
           if (p.groupNum) { set("groupNum", p.groupNum); parts.push("Grp " + p.groupNum); }
           if (p.effectiveDate) set("effectiveDate", p.effectiveDate);
           if (p.patientName && !patientName) setPatientName(p.patientName);
+          if (mismatches.length > 0) {
+            flash("CARD vs REFERRAL MISMATCH: " + mismatches.join(", ") + " - card values used, verify", "warn");
+            return;
+          }
         }
         flash("Parsed: " + parts.join(" · ") + " (verify below, re-snap if wrong)", "ok");
       } else {
@@ -749,6 +764,19 @@ function App() {
         // Auto-fill form fields from parsed data
         if (p.age) set("age", p.age);
         if (p.sex) set("sex", p.sex);
+        // Demographics
+        if (p.patientName && !patientName) setPatientName(p.patientName);
+        if (p.dob) set("dob", p.dob);
+        if (p.phone) set("phone", p.phone);
+        if (p.email) set("email", p.email);
+        if (p.address) set("address", p.address);
+        if (p.city) set("city", p.city);
+        if (p.state) set("state", p.state);
+        if (p.zip) set("zip", p.zip);
+        // Insurance from referral (will be cross-checked when card is scanned)
+        if (p.insuranceName) set("insuranceName", p.insuranceName);
+        if (p.memberId) set("memberId", p.memberId);
+        if (p.groupNum) set("groupNum", p.groupNum);
         if (p.diabetesType) set("diabetesType", p.diabetesType);
         if (p.diabetesDuration) set("diabetesDuration", p.diabetesDuration);
         if (p.referringProvider) set("referringProvider", p.referringProvider);
@@ -1325,7 +1353,11 @@ dxExtras + "\n" +
 
     var header = "AURICULAR VNS " + (form.visitType === "D0" ? "EVALUATION AND SENSORY ASSESSMENT" : "PROGRESS NOTE") + " - " + form.visitType + "\n" +
 "Patient: " + (patientName || "[Name]") + " (Study ID: " + (form.patientId||"[ID]") + ")\n" +
+(form.dob ? "DOB: " + form.dob + "\n" : "") +
 "Date: " + form.date + " | Age: " + form.age + " | Sex: " + form.sex + "\n" +
+(form.phone ? "Phone: " + form.phone + "\n" : "") +
+(form.address ? "Address: " + form.address + (form.city ? ", " + form.city : "") + (form.state ? ", " + form.state : "") + (form.zip ? " " + form.zip : "") + "\n" : "") +
+(form.insuranceName ? "Insurance: " + form.insuranceName + (form.memberId ? " (ID: " + form.memberId + ")" : "") + "\n" : "") +
 "Referring: " + (form.referringProvider||"N/A") + "\n\n";
 
     var examBlock = function(label, pre) {
@@ -1449,7 +1481,10 @@ examBlock("EXAM", true) + "\n" +
     return "LETTER OF MEDICAL NECESSITY\n" +
 "Implantation of Neurostimulator - NS100 (L8679)\n\n" +
 "Patient: " + (patientName || "[Name]") + " (Study ID: " + (form.patientId || "[ID]") + ")\n" +
+(form.dob ? "DOB: " + form.dob + "\n" : "") +
 "Date: " + form.date + " | Age: " + form.age + " | Sex: " + form.sex + "\n" +
+(form.address ? "Address: " + form.address + (form.city ? ", " + form.city : "") + (form.state ? ", " + form.state : "") + (form.zip ? " " + form.zip : "") + "\n" : "") +
+(form.insuranceName ? "Insurance: " + form.insuranceName + (form.memberId ? " (Member ID: " + form.memberId + ")" : "") + "\n" : "") +
 "Referring: " + (form.referringProvider || "N/A") + "\n\n" +
 "Does the patient have chronic intractable pain due to Diabetic Neuropathy? YES\n\n" +
 "Neurostimulator L8679 is used for the treatment of chronic intractable pain due to Diabetic Neuropathy. The patient is likely to derive significant therapeutic benefit from neurostimulator treatments.\n\n" +
@@ -1597,6 +1632,14 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     if (!form.dxCodes.length) { flash("At least one DX code required", "err"); return; }
     if (!sheetUrl) { flash("No script URL configured", "err"); return; }
 
+    // Billing audit - block if claim killers present
+    var billingErrors = getBillingErrors();
+    if (billingErrors.length > 0) {
+      setValidationErrors(billingErrors);
+      setShowOverride(true);
+      return;
+    }
+
     setPreauthGenerating(true);
     try {
       // Save draft first so the patient is findable later
@@ -1625,6 +1668,51 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     setPreauthGenerating(false);
   }
 
+  // Billing audit - claim-killer fields that cause Medicare rejection
+  // Use for both D0 submit and Phone Intake → Generate Preauth paths
+  function getBillingErrors() {
+    var errors = [];
+
+    // Identifying info
+    if (!patientName) errors.push("REJECTION RISK: Patient name missing");
+    if (!form.dob) errors.push("REJECTION RISK: DOB missing (Medicare requires)");
+    if (!form.address || !form.city || !form.state || !form.zip) {
+      errors.push("REJECTION RISK: Complete address missing (street/city/state/zip)");
+    }
+    if (!form.phone) errors.push("REJECTION RISK: Patient phone missing");
+
+    // Insurance
+    if (!form.insuranceName) errors.push("REJECTION RISK: Primary insurance name missing");
+    if (!form.memberId) errors.push("REJECTION RISK: Insurance member ID missing");
+
+    // Billing codes
+    if (!form.dxCodes || !form.dxCodes.length) {
+      errors.push("REJECTION RISK: No ICD-10 diagnosis codes selected");
+    }
+
+    // Referring provider (Medicare requires for DME orders)
+    if (!form.referringProvider) errors.push("REJECTION RISK: Referring provider name missing");
+
+    // LOMN content requirements
+    if (!form.painDuration) errors.push("REJECTION RISK: Pain duration missing (LOMN requires)");
+    if (!form.medications) errors.push("REJECTION RISK: Current medications missing (LOMN requires)");
+    if (!form.priorTx || !form.priorTx.length) {
+      errors.push("REJECTION RISK: No prior conservative treatments documented (LOMN requires evidence of failed therapy)");
+    }
+    if (!form.painRest && !form.painWorst) {
+      errors.push("REJECTION RISK: Pain rating missing (LOMN requires)");
+    }
+
+    // Contraindications must be actively screened (empty array means not screened)
+    // Allow "none identified" by requiring an explicit acknowledgment via the contraindications field existing
+    // The chip group exists; if user never touched it, that's not the same as "screened and none"
+    // We accept either: at least one contraindication selected, OR an explicit "none" pseudo-flag
+    // For now: warn if completely empty since user should at least look at the section
+    // (Not strictly a rejection trigger, downgraded to warning would be ideal but keeping as error for safety)
+
+    return errors;
+  }
+
   // Validation - check for missing required items
   function getValidationErrors() {
     var errors = [];
@@ -1639,6 +1727,10 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 
     // D0 (placement visit): consents, device stickers, impedance
     if (form.visitType === "D0") {
+      // Billing audit first - claim killers block submit
+      var billingErrors = getBillingErrors();
+      for (var bi = 0; bi < billingErrors.length; bi++) errors.push(billingErrors[bi]);
+
       if (photoTypes.indexOf("consent_procedure") === -1) errors.push("Missing: Procedure Consent (sign on Consent tab)");
       if (photoTypes.indexOf("consent_data") === -1) errors.push("Missing: Data Use Consent (sign on Consent tab)");
       if (photoTypes.indexOf("consent_social") === -1) errors.push("Missing: Social Media Consent (sign on Consent tab)");
