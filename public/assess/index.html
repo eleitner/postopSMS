@@ -12,6 +12,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fff}*{-webkit-tap-highlight-color:transparent}</style>
 </head>
 <body>
@@ -3207,7 +3209,127 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   );
 }
 
-ReactDOM.render(<App />, document.getElementById("root"));
+// ============================================================
+// FIREBASE AUTH CONFIG - fill these in from your Firebase console
+// console.firebase.google.com → Project Settings → Web app → Config
+// ============================================================
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC42d3nQc7LbWJIB8fZdSsqEgITkd3wDwM",
+  authDomain: "dnc-platform.firebaseapp.com",
+  projectId: "dnc-platform",
+  storageBucket: "dnc-platform.firebasestorage.app",
+  messagingSenderId: "626934183990",
+  appId: "1:626934183990:web:c620cef74ceeb442934097"
+};
+
+// Allowlist: only these emails can access the app.
+// Add MAs, clinicians, billers as you onboard them.
+const ALLOWED_EMAILS = [
+  "evan.leitner@gmail.com",
+  "lindseyallannelson@gmail.com",
+  "diabeticnerveclinic@gmail.com",
+"bradley.burdick@huntington.com"
+];
+
+// Initialize Firebase only if config is filled in
+let __firebaseEnabled = false;
+try {
+  if (FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId) {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    __firebaseEnabled = true;
+  }
+} catch(e) { console.error("Firebase init failed:", e); }
+
+function AuthGate() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+
+  useEffect(function() {
+    if (!__firebaseEnabled) {
+      // No Firebase config = auth disabled (dev mode). Allow access.
+      setLoading(false);
+      return;
+    }
+    var unsub = firebase.auth().onAuthStateChanged(function(u) {
+      if (u) {
+        var email = (u.email || "").toLowerCase();
+        var allowed = ALLOWED_EMAILS.map(function(e){return e.toLowerCase()});
+        if (allowed.indexOf(email) === -1) {
+          setAuthError("Access denied for " + email + ". Contact admin to add you to the allowlist.");
+          firebase.auth().signOut();
+          setUser(null);
+        } else {
+          setUser(u);
+          setAuthError("");
+          window.__currentUser = u;
+        }
+      } else {
+        setUser(null);
+        window.__currentUser = null;
+      }
+      setLoading(false);
+    });
+    return function(){ unsub && unsub(); };
+  }, []);
+
+  function signIn() {
+    setAuthError("");
+    var provider = new firebase.auth.GoogleAuthProvider();
+    firebase.auth().signInWithPopup(provider).catch(function(e) {
+      setAuthError(e.message || "Sign-in failed");
+    });
+  }
+
+  function signOut() {
+    firebase.auth().signOut();
+  }
+  window.__signOut = signOut;
+
+  if (!__firebaseEnabled) {
+    return (
+      <div>
+        <div className="bg-yellow-100 text-yellow-900 text-xs px-3 py-1 text-center border-b border-yellow-300">
+          ⚠ Auth disabled (no Firebase config) — dev mode
+        </div>
+        <App />
+      </div>
+    );
+  }
+
+  if (loading) {
+    return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading...</div>;
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+        <div className="bg-white rounded-lg shadow-md p-6 max-w-sm w-full">
+          <div className="text-center mb-4">
+            <div className="text-lg font-semibold text-gray-800">Diabetic Nerve Clinic</div>
+            <div className="text-xs text-gray-500 mt-1">Sign in to access the platform</div>
+          </div>
+          <button onClick={signIn} className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium">
+            Sign in with Google
+          </button>
+          {authError && <div className="mt-3 text-xs text-red-600 text-center">{authError}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="bg-gray-100 text-gray-600 text-xs px-3 py-1 flex justify-between items-center border-b border-gray-200">
+        <span>{user.email}</span>
+        <button onClick={signOut} className="text-blue-600 underline">Sign out</button>
+      </div>
+      <App />
+    </div>
+  );
+}
+
+ReactDOM.render(<AuthGate />, document.getElementById("root"));
 </script>
 </body>
 </html>
