@@ -3247,6 +3247,12 @@ function AuthGate() {
   const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [signingIn, setSigningIn] = useState(false);
+  const [requestMode, setRequestMode] = useState(false);
+  const [requestName, setRequestName] = useState("");
+  const [requestRole, setRequestRole] = useState("");
+  const [requestReason, setRequestReason] = useState("");
+  const [requestSubmitting, setRequestSubmitting] = useState(false);
+  const [requestSent, setRequestSent] = useState(false);
 
   useEffect(function() {
     if (!__firebaseEnabled) {
@@ -3298,6 +3304,34 @@ function AuthGate() {
   }
   window.__signOut = signOut;
 
+  async function submitAccessRequest() {
+    if (!emailInput || !requestName || !requestRole) {
+      setAuthError("Email, name, and role required");
+      return;
+    }
+    setAuthError("");
+    setRequestSubmitting(true);
+    try {
+      var storedUrl = localStorage.getItem(SHEET_URL_KEY);
+      var url = storedUrl || DEFAULT_SHEET_URL;
+      await fetch(url, {
+        method: "POST",
+        mode: "no-cors",
+        body: JSON.stringify({
+          _action: "requestAccess",
+          email: emailInput,
+          name: requestName,
+          role: requestRole,
+          reason: requestReason
+        })
+      });
+      setRequestSent(true);
+    } catch(e) {
+      setAuthError("Request failed: " + e.toString());
+    }
+    setRequestSubmitting(false);
+  }
+
   if (!__firebaseEnabled) {
     return (
       <div>
@@ -3319,34 +3353,103 @@ function AuthGate() {
         <div className="bg-white rounded-lg shadow-md p-6 max-w-sm w-full">
           <div className="text-center mb-4">
             <div className="text-lg font-semibold text-gray-800">Diabetic Nerve Clinic</div>
-            <div className="text-xs text-gray-500 mt-1">Sign in to access the platform</div>
+            <div className="text-xs text-gray-500 mt-1">{requestMode ? "Request access" : "Sign in to access the platform"}</div>
           </div>
-          <div className="space-y-2">
-            <input
-              type="email"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              placeholder="Email"
-              value={emailInput}
-              onChange={function(e){setEmailInput(e.target.value)}}
-              onKeyDown={function(e){if(e.key==="Enter")signIn()}}
-              autoFocus
-            />
-            <input
-              type="password"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              placeholder="Password"
-              value={passwordInput}
-              onChange={function(e){setPasswordInput(e.target.value)}}
-              onKeyDown={function(e){if(e.key==="Enter")signIn()}}
-            />
-            <button
-              onClick={signIn}
-              disabled={signingIn}
-              className={"w-full py-2.5 rounded-lg text-sm font-medium " + (signingIn ? "bg-gray-300 text-gray-500" : "bg-blue-600 text-white")}
-            >
-              {signingIn ? "Signing in..." : "Sign in"}
-            </button>
-          </div>
+          {!requestMode && (
+            <div className="space-y-2">
+              <input
+                type="email"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                placeholder="Email"
+                value={emailInput}
+                onChange={function(e){setEmailInput(e.target.value)}}
+                onKeyDown={function(e){if(e.key==="Enter")signIn()}}
+                autoFocus
+              />
+              <input
+                type="password"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                placeholder="Password"
+                value={passwordInput}
+                onChange={function(e){setPasswordInput(e.target.value)}}
+                onKeyDown={function(e){if(e.key==="Enter")signIn()}}
+              />
+              <button
+                onClick={signIn}
+                disabled={signingIn}
+                className={"w-full py-2.5 rounded-lg text-sm font-medium " + (signingIn ? "bg-gray-300 text-gray-500" : "bg-blue-600 text-white")}
+              >
+                {signingIn ? "Signing in..." : "Sign in"}
+              </button>
+              <button
+                onClick={function(){setRequestMode(true); setAuthError(""); setRequestSent(false)}}
+                className="w-full text-xs text-blue-600 underline mt-2"
+              >
+                Request access
+              </button>
+            </div>
+          )}
+          {requestMode && !requestSent && (
+            <div className="space-y-2">
+              <input
+                type="email"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                placeholder="Your work email"
+                value={emailInput}
+                onChange={function(e){setEmailInput(e.target.value)}}
+              />
+              <input
+                type="text"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                placeholder="Full name"
+                value={requestName}
+                onChange={function(e){setRequestName(e.target.value)}}
+              />
+              <select
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                value={requestRole}
+                onChange={function(e){setRequestRole(e.target.value)}}
+              >
+                <option value="">Role...</option>
+                <option>Clinician</option>
+                <option>MA / Front desk</option>
+                <option>Biller</option>
+                <option>Admin</option>
+                <option>Other</option>
+              </select>
+              <textarea
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm h-16"
+                placeholder="Reason for access (optional)"
+                value={requestReason}
+                onChange={function(e){setRequestReason(e.target.value)}}
+              />
+              <button
+                onClick={submitAccessRequest}
+                disabled={requestSubmitting}
+                className={"w-full py-2.5 rounded-lg text-sm font-medium " + (requestSubmitting ? "bg-gray-300 text-gray-500" : "bg-blue-600 text-white")}
+              >
+                {requestSubmitting ? "Sending..." : "Send request"}
+              </button>
+              <button
+                onClick={function(){setRequestMode(false); setAuthError("")}}
+                className="w-full text-xs text-gray-500 underline mt-1"
+              >
+                Back to sign in
+              </button>
+            </div>
+          )}
+          {requestMode && requestSent && (
+            <div className="space-y-3 text-center">
+              <div className="text-sm text-green-700 font-medium">Request sent</div>
+              <div className="text-xs text-gray-600">An admin will review and contact you at {emailInput}.</div>
+              <button
+                onClick={function(){setRequestMode(false); setRequestSent(false); setEmailInput(""); setRequestName(""); setRequestRole(""); setRequestReason("")}}
+                className="w-full text-xs text-blue-600 underline"
+              >
+                Back to sign in
+              </button>
+            </div>
+          )}
           {authError && <div className="mt-3 text-xs text-red-600 text-center">{authError}</div>}
         </div>
       </div>
