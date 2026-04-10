@@ -3250,10 +3250,6 @@ function AuthGate() {
       setLoading(false);
       return;
     }
-    // Handle redirect result on page load
-    firebase.auth().getRedirectResult().catch(function(e) {
-      setAuthError(e.message || "Sign-in failed");
-    });
     var unsub = firebase.auth().onAuthStateChanged(function(u) {
       if (u) {
         var email = (u.email || "").toLowerCase();
@@ -3279,8 +3275,11 @@ function AuthGate() {
   function signIn() {
     setAuthError("");
     var provider = new firebase.auth.GoogleAuthProvider();
-    firebase.auth().signInWithRedirect(provider).catch(function(e) {
-      setAuthError(e.message || "Sign-in failed");
+    firebase.auth().signInWithPopup(provider).catch(function(e) {
+      // popup-closed-by-user is harmless (user cancelled), don't show as error
+      if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
+        setAuthError(e.message || "Sign-in failed");
+      }
     });
   }
 
