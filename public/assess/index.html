@@ -434,9 +434,9 @@ function App() {
         parts.push("Sec: " + (p.insuranceSecondary || "Secondary") + (p.memberIdSecondary ? " #" + p.memberIdSecondary : ""));
       }
       if (p.notes) parts.push(p.notes);
-      data = { name: p.name || "", dob: p.dob || "", phone: p.phone || "", provider: p.provider || "", notes: parts.join(" | ") };
+      data = { name: p.name || "", dob: p.dob || "", phone: p.phone || "", provider: p.provider || "", notes: parts.join(" | "), orderDate: p.orderDate || "" };
     } else {
-      data = { name: newRef.name, dob: newRef.dob, phone: newRef.phone, provider: newRef.provider, notes: newRef.notes };
+      data = { name: newRef.name, dob: newRef.dob, phone: newRef.phone, provider: newRef.provider, notes: newRef.notes, orderDate: "" };
     }
     if (!data.name.trim() || !data.phone.trim()) { flash("Name and phone required", "err"); return; }
     if (!sheetUrl) { flash("Set database URL first", "err"); return; }
@@ -444,7 +444,8 @@ function App() {
       var payload = {
         _action: "addReferral",
         patientName: data.name, dob: data.dob, phone: data.phone,
-        referringProvider: data.provider, notes: data.notes
+        referringProvider: data.provider, notes: data.notes,
+        orderDate: data.orderDate
       };
       if (forceAdd) payload.forceAdd = true;
       var resp = await fetch(sheetUrl, {
@@ -2215,6 +2216,21 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     <div className="text-xs text-gray-500">{ref.provider ? "Ref: " + ref.provider : ""}{ref.phone ? " | " + ref.phone : ""}</div>
                     <div className={"text-xs " + (isStale ? "text-orange-600 font-bold" : "text-gray-400")}>{days > 0 ? days + "d ago" : "Today"}</div>
                   </div>
+                  {(function(){
+                    // Extract Ins: and Sec: lines from notes string for display
+                    var notesStr = String(ref.notes || "");
+                    var insMatch = /\bIns:\s*([^|]+)/i.exec(notesStr);
+                    var secMatch = /\bSec:\s*([^|]+)/i.exec(notesStr);
+                    var primary = insMatch ? insMatch[1].trim() : "";
+                    var secondary = secMatch ? secMatch[1].trim() : "";
+                    if (!primary && !secondary) return null;
+                    return (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {primary && <div className="truncate">{primary}</div>}
+                        {secondary && <div className="truncate">2°: {secondary}</div>}
+                      </div>
+                    );
+                  })()}
                   {ref.dncId && <div className="text-xs text-blue-500">ID: {ref.dncId}</div>}
                 <div className="flex gap-2 pt-1">
                   {!ref.dncId && (
