@@ -61,6 +61,8 @@ const PHOTO_TYPES = [
   { key: "medicare_secondary", label: "Secondary Insurance", icon: "$" },
   { key: "serial", label: "Device Sticker (top)", icon: "#" },
   { key: "needles", label: "Needles Sticker (bottom)", icon: "#" },
+  { key: "earmap", label: "Ear Map", icon: "👂" },
+  { key: "earphoto", label: "Ear Photo", icon: "📷" },
 ];
 
 const CONSENTS = [
@@ -848,6 +850,17 @@ function App() {
   // Silent auto-save: fires on form changes, debounced, no flash messages
   function autoSaveDraft() {
     if (!form.patientId) return;
+    // Guard: don't overwrite cloud draft with empty form. If the form has no name,
+    // no age, no demographics, no clinical content, refuse to save. This prevents
+    // data loss when the form is reset (e.g. after submit, after switching patients,
+    // after page refresh while a stale patientId lingers).
+    var hasContent = patientName || form.age || form.sex || form.dob || form.phone ||
+      form.painRest || form.painBest || form.painWorst ||
+      form.medications || form.referringProvider ||
+      (form.pmhx && form.pmhx.length > 0) ||
+      (form.painDescriptors && form.painDescriptors.length > 0) ||
+      (form.priorTx && form.priorTx.length > 0);
+    if (!hasContent) return;
     var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
     var updated = Object.assign({}, drafts);
     updated[form.patientId] = draftData;
