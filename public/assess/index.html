@@ -707,26 +707,18 @@ function App() {
       var result = await resp.json();
       if (result.status === "ok" && result.parsed) {
         var p = result.parsed;
-        var v = result.verified || null;
-        // Cross-check numeric fields between main parse and verification pass
-        var mismatches = [];
-        if (v) {
-          var phoneCmp = compareNumeric("phone", p.phone, v.phone);
-          if (phoneCmp) mismatches.push(phoneCmp);
-          var mbi1Cmp = compareNumeric("memberIdPrimary", p.memberIdPrimary, v.memberIdPrimary);
-          if (mbi1Cmp) mismatches.push(mbi1Cmp);
-          var mbi2Cmp = compareNumeric("memberIdSecondary", p.memberIdSecondary, v.memberIdSecondary);
-          if (mbi2Cmp) mismatches.push(mbi2Cmp);
-        }
         // Format validation: phone must be 10-11 digits
         var formatWarnings = [];
         if (p.phone && !isValidPhone(p.phone)) formatWarnings.push("Phone number doesn't look right: " + p.phone);
+        // Member ID sanity: flag if it contains '?' (model couldn't read a character)
+        if (p.memberIdPrimary && p.memberIdPrimary.indexOf("?") >= 0) formatWarnings.push("Primary member ID has unreadable characters: " + p.memberIdPrimary);
+        if (p.memberIdSecondary && p.memberIdSecondary.indexOf("?") >= 0) formatWarnings.push("Secondary member ID has unreadable characters: " + p.memberIdSecondary);
         // Payer classification
         var payerTier = classifyPayer(p.insurancePrimary, p.insuranceSecondary);
         setParseQueue(function(q){
           return q.map(function(item){
             return item.id === queueId
-              ? Object.assign({}, item, { status: "parsed", parsed: p, verified: v, mismatches: mismatches, formatWarnings: formatWarnings, payerTier: payerTier })
+              ? Object.assign({}, item, { status: "parsed", parsed: p, formatWarnings: formatWarnings, payerTier: payerTier })
               : item;
           });
         });
@@ -2049,7 +2041,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     var p = item.parsed || {};
                     var hasContra = Array.isArray(p.contraindications) && p.contraindications.length > 0;
                     var payerTier = item.payerTier || { tier: "neutral", reason: "" };
-                    var mismatches = item.mismatches || [];
                     var formatWarnings = item.formatWarnings || [];
                     // Color precedence: error > contra (red) > payer red > payer yellow > payer green > neutral
                     var cardBorder = item.status === "error" ? "border-red-300 bg-red-50"
@@ -2092,15 +2083,10 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                             {(p.insuranceSecondary || p.memberIdSecondary) && (
                               <div className="text-xs text-gray-500">Sec: {p.insuranceSecondary || ""}{p.memberIdSecondary ? " #" + p.memberIdSecondary : ""}</div>
                             )}
-                            {(mismatches.length > 0 || formatWarnings.length > 0) && (
+                            {formatWarnings.length > 0 && (
                               <div className="mt-1 bg-yellow-100 border border-yellow-300 rounded p-1.5">
                                 <div className="text-xs font-semibold text-yellow-800 mb-0.5">⚠ Verify before adding:</div>
                                 {formatWarnings.map(function(w, i) { return <div key={"f"+i} className="text-xs text-yellow-800">{w}</div>; })}
-                                {mismatches.map(function(m, i) { return (
-                                  <div key={"m"+i} className="text-xs text-yellow-800">
-                                    {m.field}: pass1=<span className="font-mono">{m.primary}</span> vs pass2=<span className="font-mono">{m.verified}</span>
-                                  </div>
-                                );})}
                               </div>
                             )}
                             <div className="flex gap-2 mt-2">
