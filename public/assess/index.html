@@ -258,9 +258,6 @@ const defaultState = {
   neuropathyType: "Polyneuropathy", neuropathyDistribution: "Bilateral LE",
   // Device
   implantSide: "Right",
-  trigeminalOhms: "", trigeminalHz: "",
-  c2Ohms: "", c2Hz: "",
-  vagusOhms: "", vagusHz: "",
   deviceNotes: "",
   // Sensory assessment
   nrsPainPre: "", nrsPainPost: "",
@@ -295,6 +292,21 @@ function App() {
   const [sheetUrl, setSheetUrl] = useState(DEFAULT_SHEET_URL);
   const [showConfig, setShowConfig] = useState(false);
   const [photoPatientId, setPhotoPatientId] = useState("");
+
+  // Restore photoPatientId from localStorage on mount
+  useEffect(function() {
+    try {
+      var saved = storage.get("dpn-photo-patient-id");
+      if (saved && saved.value) setPhotoPatientId(saved.value);
+    } catch(e) {}
+  }, []);
+
+  // Persist photoPatientId whenever it changes
+  useEffect(function() {
+    try {
+      if (photoPatientId) storage.set("dpn-photo-patient-id", photoPatientId);
+    } catch(e) {}
+  }, [photoPatientId]);
   const [sigModalType, setSigModalType] = useState(null); // null or photo type like "signature_patient"
   const [sigDrawing, setSigDrawing] = useState(false);
   const [currentConsent, setCurrentConsent] = useState(null); // null or consent key
@@ -315,6 +327,30 @@ function App() {
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
   const [dupModal, setDupModal] = useState(null); // {existing: {...}, source} when a duplicate referral is detected
   const [parseQueue, setParseQueue] = useState([]); // [{id, status, parsed, error, fileName}] for multi-photo batch parse
+
+  // Inline stopwatch for sensory exam (SLS, 10m walk). No navigation away from app.
+  const [swRunning, setSwRunning] = useState(false);
+  const [swElapsed, setSwElapsed] = useState(0); // ms
+  const [swStartTime, setSwStartTime] = useState(null);
+
+  useEffect(function() {
+    if (!swRunning) return;
+    var interval = setInterval(function() {
+      setSwElapsed(Date.now() - swStartTime);
+    }, 50);
+    return function() { clearInterval(interval); };
+  }, [swRunning, swStartTime]);
+
+  function swStart() {
+    setSwStartTime(Date.now() - swElapsed);
+    setSwRunning(true);
+  }
+  function swStop() { setSwRunning(false); }
+  function swReset() { setSwRunning(false); setSwElapsed(0); setSwStartTime(null); }
+  function swFormat(ms) {
+    var s = ms / 1000;
+    return s.toFixed(1);
+  }
 
   function generatePatientId() {
     var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -929,23 +965,11 @@ function App() {
       painDescriptors: (draftData && draftData.painDescriptors) || [],
       dxCodes: (draftData && draftData.dxCodes) || [],
       contraindications: (draftData && draftData.contraindications) || [],
-      // Per-visit sensory data: always reset
-      nrsPainPre: "", nrsPainPost: "",
-      rmssdPre: "", rmssdPost: "",
-      leftFootPre: Array(12).fill(false), leftFootPost: Array(12).fill(false),
-      rightFootPre: Array(12).fill(false), rightFootPost: Array(12).fill(false),
-      coinQuarterPre: "", coinQuarterPost: "",
-      coinDimePre: "", coinDimePost: "",
-      coinPennyPre: "", coinPennyPost: "",
-      slsRightSecPre: "", slsRightSecPost: "",
-      slsRightFallPre: "No", slsRightFallPost: "No",
-      slsLeftSecPre: "", slsLeftSecPost: "",
-      slsLeftFallPre: "No", slsLeftFallPost: "No",
-      walkTimePre: "", walkTimePost: "",
-      subjective: "", plan: "",
-      subjectivePre: "", subjectivePost: "",
-      explantSiteClean: "Yes", explantInduration: "No", explantErythema: "No", explantTolerated: "Yes", explantComplication: "No", explantComplicationDetail: "", explantNotes: "",
-      notes: "",
+      // Sensory arrays: defensive defaults if missing from old drafts, but preserve any saved values
+      leftFootPre: (draftData && draftData.leftFootPre) || Array(12).fill(false),
+      leftFootPost: (draftData && draftData.leftFootPost) || Array(12).fill(false),
+      rightFootPre: (draftData && draftData.rightFootPre) || Array(12).fill(false),
+      rightFootPost: (draftData && draftData.rightFootPost) || Array(12).fill(false),
     });
     setForm(loaded);
     // Also save to local drafts
@@ -1124,55 +1148,139 @@ function App() {
     if (!consentSigs.witness) { flash("Witness signature required", "err"); return; }
     if (!consentSigs.witnessName.trim()) { flash("Witness name required", "err"); return; }
 
-    // Render composite image
+    // ---- Render full consent text onto a tall canvas with signatures at the bottom ----
+    // Approach: measure and wrap body text line-by-line at 820px wide (900px canvas - 80px padding),
+    // compute total height, draw everything, then the signature section, then save as one tall JPEG.
+    var canvasWidth = 900;
+    var padX = 40;
+    var contentWidth = canvasWidth - (padX * 2);
+    var lineHeight = 20;
+    var bodyFont = "14px Arial";
+    var titleFont = "bold 22px Arial";
+    var headerFont = "14px Arial";
+
+    // Offscreen context just for measuring
+    var measureCanvas = document.createElement("canvas");
+    var mctx = measureCanvas.getContext("2d");
+    mctx.font = bodyFont;
+
+    function wrapLine(text, maxWidth) {
+      var words = text.split(" ");
+      var lines = [];
+      var current = "";
+      for (var i = 0; i < words.length; i++) {
+        var test = current ? current + " " + words[i] : words[i];
+        if (mctx.measureText(test).width > maxWidth && current) {
+          lines.push(current);
+          current = words[i];
+        } else {
+          current = test;
+        }
+      }
+      if (current) lines.push(current);
+      return lines;
+    }
+
+    // Build all wrapped lines for the body
+    var bodyLines = [];
+    var paragraphs = consent.body.split("\n");
+    for (var p = 0; p < paragraphs.length; p++) {
+      if (paragraphs[p] === "") {
+        bodyLines.push(""); // blank line
+      } else {
+        var wrapped = wrapLine(paragraphs[p], contentWidth);
+        for (var w = 0; w < wrapped.length; w++) bodyLines.push(wrapped[w]);
+      }
+    }
+
+    // Compute total canvas height: header (130px) + body + signature block (280px) + footer (60px)
+    var headerHeight = 130;
+    var bodyHeight = bodyLines.length * lineHeight + 20;
+    var sigBlockHeight = 280;
+    var footerHeight = 60;
+    var totalHeight = headerHeight + bodyHeight + sigBlockHeight + footerHeight;
+
     var canvas = document.createElement("canvas");
-    canvas.width = 900;
-    canvas.height = 700;
+    canvas.width = canvasWidth;
+    canvas.height = totalHeight;
     var ctx = canvas.getContext("2d");
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#000000";
-    ctx.font = "bold 22px Arial";
-    ctx.fillText(consent.title, 30, 40);
-    ctx.font = "14px Arial";
-    ctx.fillText("Study ID: " + pid, 30, 70);
-    ctx.fillText("Date: " + new Date().toLocaleString(), 30, 90);
-    ctx.fillText("Patient has read and agreed to the full consent text.", 30, 120);
-    ctx.fillText("Full consent text is preserved in the patient's clinical record.", 30, 140);
 
-    // Patient sig
-    ctx.strokeStyle = "#999999";
-    ctx.strokeRect(30, 180, 400, 200);
+    // Header
+    ctx.fillStyle = "#000000";
+    ctx.font = titleFont;
+    ctx.fillText(consent.title, padX, 40);
+    ctx.font = headerFont;
+    ctx.fillText("Diabetic Nerve Clinic", padX, 65);
+    ctx.fillText("Study ID: " + pid, padX, 85);
+    ctx.fillText("Date: " + new Date().toLocaleString(), padX, 105);
+    // Horizontal rule
+    ctx.strokeStyle = "#cccccc";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padX, 120);
+    ctx.lineTo(canvasWidth - padX, 120);
+    ctx.stroke();
+
+    // Body text
+    ctx.font = bodyFont;
+    ctx.fillStyle = "#000000";
+    var y = headerHeight + 10;
+    for (var bl = 0; bl < bodyLines.length; bl++) {
+      ctx.fillText(bodyLines[bl], padX, y);
+      y += lineHeight;
+    }
+
+    // Signature section
+    var sigY = headerHeight + bodyHeight + 20;
+    ctx.strokeStyle = "#cccccc";
+    ctx.beginPath();
+    ctx.moveTo(padX, sigY);
+    ctx.lineTo(canvasWidth - padX, sigY);
+    ctx.stroke();
+
+    ctx.fillStyle = "#000000";
+    ctx.font = "bold 14px Arial";
+    ctx.fillText("SIGNATURES", padX, sigY + 25);
+
+    // Patient sig box
     ctx.fillStyle = "#666666";
     ctx.font = "12px Arial";
-    ctx.fillText("PATIENT SIGNATURE", 30, 175);
+    ctx.fillText("PATIENT SIGNATURE", padX, sigY + 50);
+    ctx.strokeStyle = "#999999";
+    ctx.strokeRect(padX, sigY + 60, 380, 160);
+
+    // Witness sig box
+    ctx.fillText("WITNESS SIGNATURE", 470, sigY + 50);
+    ctx.strokeRect(470, sigY + 60, 380, 160);
+    ctx.fillStyle = "#000000";
+    ctx.font = "13px Arial";
+    ctx.fillText("Witness: " + consentSigs.witnessName, 470, sigY + 245);
+
     var patientImg = new Image();
     patientImg.onerror = function() { flash("Patient signature image failed to load, try re-signing", "err"); };
     patientImg.onload = function() {
-      ctx.drawImage(patientImg, 30, 180, 400, 200);
-
-      // Witness sig
-      ctx.strokeStyle = "#999999";
-      ctx.strokeRect(470, 180, 400, 200);
-      ctx.fillStyle = "#666666";
-      ctx.fillText("WITNESS SIGNATURE", 470, 175);
-      ctx.fillText("Witness: " + consentSigs.witnessName, 470, 400);
+      ctx.drawImage(patientImg, padX, sigY + 60, 380, 160);
 
       var witnessImg = new Image();
       witnessImg.onerror = function() { flash("Witness signature image failed to load, try re-signing", "err"); };
       witnessImg.onload = function() {
-        ctx.drawImage(witnessImg, 470, 180, 400, 200);
+        ctx.drawImage(witnessImg, 470, sigY + 60, 380, 160);
 
         // Footer
+        var footY = sigY + sigBlockHeight;
         ctx.fillStyle = "#000000";
         ctx.font = "11px Arial";
-        ctx.fillText("Diabetic Nerve Clinic - Signed electronically at the time of visit", 30, 450);
-        ctx.fillText("This document constitutes informed consent for the procedure/use described above.", 30, 468);
+        ctx.fillText("Diabetic Nerve Clinic — Signed electronically at the time of visit", padX, footY + 20);
+        ctx.fillText("This document constitutes informed consent for the topics described above.", padX, footY + 38);
 
-        // Save as photo
-        var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        // Save as photo (higher quality than before since this is a legal doc)
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.9);
         var newPhoto = { id: Date.now(), patientId: pid, type: consent.photoType, timestamp: new Date().toISOString(), data: dataUrl };
-        var updated = photos.concat([newPhoto]);
+        // Remove any existing consent of this type to prevent duplicates on re-sign
+        var filtered = photos.filter(function(ph){ return !(ph.patientId === pid && ph.type === consent.photoType); });
+        var updated = filtered.concat([newPhoto]);
         setPhotos(updated);
         try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
         flash(consent.title + " signed and saved");
@@ -1213,9 +1321,6 @@ function App() {
       painDuration:form.painDuration, painDurationUnit:form.painDurationUnit,
       dxCodes:safe(form.dxCodes).join("; "), contraindications:safe(form.contraindications).join("; "),
       prognosis:form.prognosis, neuropathyType:form.neuropathyType, neuropathyDistribution:form.neuropathyDistribution,
-      trigeminalOhms:form.trigeminalOhms, trigeminalHz:form.trigeminalHz,
-      c2Ohms:form.c2Ohms, c2Hz:form.c2Hz,
-      vagusOhms:form.vagusOhms, vagusHz:form.vagusHz,
       deviceNotes:form.deviceNotes,
       nrsPainPre:form.nrsPainPre, nrsPainPost:form.nrsPainPost,
       rmssdPre:form.rmssdPre, rmssdPost:form.rmssdPost,
@@ -1337,9 +1442,9 @@ dxExtras + "\n" +
 "Operative Note:\n" +
 "This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a class 2 low to moderate risk device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at a power of 200 for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
 "After standard of care informed consent was performed and obtained, including but not limited to a review of all potential treatment alternatives and options, the patient agreed and requested to proceed accepting all known and unknown procedural (and anesthesia) risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
-"First, the programmable patient technical unit was utilized to precisely identify the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. This was objectively confirmed within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power densities) were applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.trigeminalOhms || "325-350") + " Ohms and " + (form.trigeminalHz || "9.12") + "Hz - guiding the precise sub dermal implantation of the platinum iridium electrode.\n\n" +
-"Second, the programmable patient technical unit was utilized to precisely identify the distal C2 spinal nerve root lesser occipital branch nerve. This was objectively confirmed at the posterior mid helix - mid concha. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep current and power densities) were again applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.c2Ohms || "350-360") + " Ohms and " + (form.c2Hz || "36.48") + "Hz - guiding the precise sub-dermal implantation of the second platinum iridium electrode.\n\n" +
-"Third, the programmable patient technical unit was utilized to precisely identify the auricular branch of the vagus cranial nerve. This was objectively confirmed at the inferomedial antitragus again utilizing real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power density arrays) applied with real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.vagusOhms || "400") + " Ohms and " + (form.vagusHz || "72.96") + "Hz - guiding the precise sub-dermal implantation of the third platinum iridium electrode.\n\n" +
+"First, the programmable patient technical unit was utilized to precisely identify the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. This was objectively confirmed within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power densities) were applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately 325-350 Ohms and 9.12Hz - guiding the precise sub dermal implantation of the platinum iridium electrode.\n\n" +
+"Second, the programmable patient technical unit was utilized to precisely identify the distal C2 spinal nerve root lesser occipital branch nerve. This was objectively confirmed at the posterior mid helix - mid concha. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep current and power densities) were again applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately 350-360 Ohms and 36.48Hz - guiding the precise sub-dermal implantation of the second platinum iridium electrode.\n\n" +
+"Third, the programmable patient technical unit was utilized to precisely identify the auricular branch of the vagus cranial nerve. This was objectively confirmed at the inferomedial antitragus again utilizing real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power density arrays) applied with real-time closed loop impedance drop isolating the exact neural ending at approximately 400 Ohms and 72.96Hz - guiding the precise sub-dermal implantation of the third platinum iridium electrode.\n\n" +
 "After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post procedure until meeting stable discharge criteria and discharged without complication - given complete postoperative and followup instructions.\n\n" +
 "Specific Follow-up: Instructions given to patient for management and care of the dressing." +
 (form.deviceNotes ? "\n\nDevice: " + form.deviceNotes : "") + "\n\n" +
@@ -1406,9 +1511,9 @@ dxExtras + "\n" +
 "Operative Note:\n" +
 "This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a class 2 low to moderate risk device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at a power of 200 for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
 "After standard of care informed consent was performed and obtained, including but not limited to a review of all potential treatment alternatives and options, the patient agreed and requested to proceed accepting all known and unknown procedural (and anesthesia) risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
-"First, the programmable patient technical unit was utilized to precisely identify the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. This was objectively confirmed within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power densities) were applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.trigeminalOhms || "325-350") + " Ohms and " + (form.trigeminalHz || "9.12") + "Hz - guiding the precise sub dermal implantation of the platinum iridium electrode.\n\n" +
-"Second, the programmable patient technical unit was utilized to precisely identify the distal C2 spinal nerve root lesser occipital branch nerve. This was objectively confirmed at the posterior mid helix - mid concha. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep current and power densities) were again applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.c2Ohms || "350-360") + " Ohms and " + (form.c2Hz || "36.48") + "Hz - guiding the precise sub-dermal implantation of the second platinum iridium electrode.\n\n" +
-"Third, the programmable patient technical unit was utilized to precisely identify the auricular branch of the vagus cranial nerve. This was objectively confirmed at the inferomedial antitragus again utilizing real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power density arrays) applied with real-time closed loop impedance drop isolating the exact neural ending at approximately " + (form.vagusOhms || "400") + " Ohms and " + (form.vagusHz || "72.96") + "Hz - guiding the precise sub-dermal implantation of the third platinum iridium electrode.\n\n" +
+"First, the programmable patient technical unit was utilized to precisely identify the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. This was objectively confirmed within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power densities) were applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately 325-350 Ohms and 9.12Hz - guiding the precise sub dermal implantation of the platinum iridium electrode.\n\n" +
+"Second, the programmable patient technical unit was utilized to precisely identify the distal C2 spinal nerve root lesser occipital branch nerve. This was objectively confirmed at the posterior mid helix - mid concha. Real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep current and power densities) were again applied utilizing real-time closed loop impedance drop isolating the exact neural ending at approximately 350-360 Ohms and 36.48Hz - guiding the precise sub-dermal implantation of the second platinum iridium electrode.\n\n" +
+"Third, the programmable patient technical unit was utilized to precisely identify the auricular branch of the vagus cranial nerve. This was objectively confirmed at the inferomedial antitragus again utilizing real time closed loop feedback electrical analysis and generator reprogramming (fixed and sweep active cathodal current and power density arrays) applied with real-time closed loop impedance drop isolating the exact neural ending at approximately 400 Ohms and 72.96Hz - guiding the precise sub-dermal implantation of the third platinum iridium electrode.\n\n" +
 "After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post procedure until meeting stable discharge criteria and discharged without complication - given complete postoperative and followup instructions.\n\n" +
 "Specific Follow-up: Instructions given to patient for management and care of the dressing." +
 (form.deviceNotes ? "\n\nDevice: " + form.deviceNotes : "");
@@ -1456,8 +1561,7 @@ form.age + " year old " + (form.sex==="M"?"male":"female") + " with chronic (>" 
 "RELEVANT HISTORY:\n" +
 "  " + form.diabetesType + " DM x " + form.diabetesDuration + " yrs | A1C: " + (form.a1c||"---") + "\n" +
 "  PMHx: " + (form.pmhx.length ? form.pmhx.join(", ") : "none") + "\n" +
-"  Meds: " + (form.medications || "none") + "\n" +
-(form.trigeminalOhms ? "  Device (D0): Tri " + form.trigeminalOhms + "/" + form.trigeminalHz + "Hz | C2 " + form.c2Ohms + "/" + form.c2Hz + "Hz | Vagus " + form.vagusOhms + "/" + form.vagusHz + "Hz\n" : "") + "\n" +
+"  Meds: " + (form.medications || "none") + "\n\n" +
 "OBJECTIVE:\n" +
 examBlock("PRE-EXPLANT", true) + "\n" +
 "EXPLANT PROCEDURE:\n" + explantNote + "\n\n" +
@@ -1744,9 +1848,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       if (photoTypes.indexOf("consent_social") === -1) errors.push("Missing: Social Media Consent (sign on Consent tab)");
       if (photoTypes.indexOf("serial") === -1) errors.push("Missing: Device Sticker (top)");
       if (photoTypes.indexOf("needles") === -1) errors.push("Missing: Needles Sticker (bottom)");
-      if (!form.trigeminalOhms || !form.trigeminalHz) errors.push("Missing: Trigeminal impedance values");
-      if (!form.c2Ohms || !form.c2Hz) errors.push("Missing: C2 impedance values");
-      if (!form.vagusOhms || !form.vagusHz) errors.push("Missing: Vagus impedance values");
       if (!form.deviceSerial) errors.push("Missing: Device serial number (type or snap sticker)");
     }
 
@@ -2740,23 +2841,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <div><label className={lc}>Lot</label><input className={ic} value={form.needlesLot} onChange={function(e){set("needlesLot",e.target.value)}} placeholder="NS26A1000" /></div>
                       <div><label className={lc}>Exp</label><input className={ic} value={form.needlesExpiration} onChange={function(e){set("needlesExpiration",e.target.value)}} placeholder="2026-12" /></div>
                     </div>
-                    <div className="text-xs font-semibold text-gray-500 mb-1 mt-2">IMPEDANCE (at placement)</div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div className="text-xs font-medium text-gray-500 text-center">Trigeminal</div>
-                      <div className="text-xs font-medium text-gray-500 text-center">C2</div>
-                      <div className="text-xs font-medium text-gray-500 text-center">Vagus</div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 mt-1">
-                      <div><label className={lc}>Ohms</label><input className={ic} value={form.trigeminalOhms} onChange={function(e){set("trigeminalOhms",e.target.value)}} placeholder="325-350" /></div>
-                      <div><label className={lc}>Ohms</label><input className={ic} value={form.c2Ohms} onChange={function(e){set("c2Ohms",e.target.value)}} placeholder="350-360" /></div>
-                      <div><label className={lc}>Ohms</label><input className={ic} value={form.vagusOhms} onChange={function(e){set("vagusOhms",e.target.value)}} placeholder="~400" /></div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 mt-1">
-                      <div><label className={lc}>Hz</label><input className={ic} value={form.trigeminalHz} onChange={function(e){set("trigeminalHz",e.target.value)}} placeholder="9.12" /></div>
-                      <div><label className={lc}>Hz</label><input className={ic} value={form.c2Hz} onChange={function(e){set("c2Hz",e.target.value)}} placeholder="36.48" /></div>
-                      <div><label className={lc}>Hz</label><input className={ic} value={form.vagusHz} onChange={function(e){set("vagusHz",e.target.value)}} placeholder="72.96" /></div>
-                    </div>
-                    <input className={ic + " mt-1"} value={form.deviceNotes} onChange={function(e){set("deviceNotes",e.target.value)}} placeholder="Placement notes..." />
+                    <input className={ic + " mt-2"} value={form.deviceNotes} onChange={function(e){set("deviceNotes",e.target.value)}} placeholder="Placement notes..." />
                   </div>
                   )}
                 </div>
@@ -2774,7 +2859,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <div>PMHx: {form.pmhx.length ? form.pmhx.join(", ") : "none"}</div>
                       <div>Meds: {form.medications || "none"}</div>
                       <div>Prior Tx: {form.priorTx.length ? form.priorTx.join(", ") : "none"}</div>
-                      {form.trigeminalOhms && <div>Device: Tri {form.trigeminalOhms}/{form.trigeminalHz}Hz | C2 {form.c2Ohms}/{form.c2Hz}Hz | Vagus {form.vagusOhms}/{form.vagusHz}Hz</div>}
                     </div>
                   </div>
 
@@ -2924,8 +3008,33 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 </div>
               </div>
 
+              <div className="bg-blue-50 rounded p-3 border border-blue-200">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-semibold text-blue-700">STOPWATCH</div>
+                  <div className="text-xs text-blue-500">{swFormat(swElapsed)}s</div>
+                </div>
+                <div className="flex gap-2">
+                  {!swRunning && swElapsed === 0 && (
+                    <button onClick={swStart} className="flex-1 py-2 bg-green-600 text-white rounded text-sm font-medium">Start</button>
+                  )}
+                  {!swRunning && swElapsed > 0 && (
+                    <React.Fragment>
+                      <button onClick={swStart} className="flex-1 py-2 bg-green-600 text-white rounded text-sm font-medium">Resume</button>
+                      <button onClick={swReset} className="flex-1 py-2 bg-gray-200 text-gray-700 rounded text-sm font-medium">Reset</button>
+                    </React.Fragment>
+                  )}
+                  {swRunning && (
+                    <React.Fragment>
+                      <button onClick={swStop} className="flex-1 py-2 bg-red-600 text-white rounded text-sm font-medium">Stop</button>
+                      <button onClick={swReset} className="flex-1 py-2 bg-gray-200 text-gray-700 rounded text-sm font-medium">Reset</button>
+                    </React.Fragment>
+                  )}
+                </div>
+                <div className="text-xs text-blue-400 mt-1">Use for Single Leg Stance (max 45s) and 10m walk. Tap Stop, read the seconds, type into the field.</div>
+              </div>
+
               <div className="bg-gray-50 rounded p-3">
-                <div className="text-xs font-semibold text-gray-500 mb-2">SINGLE LEG STANCE (eyes closed, max 30s) and 10M WALK</div>
+                <div className="text-xs font-semibold text-gray-500 mb-2">SINGLE LEG STANCE (eyes closed, max 45s) and 10M WALK</div>
                 <div className={"grid gap-4 " + (phases.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
                   {phases.map(function(ph) { return (
                     <div key={ph}>
