@@ -57,8 +57,10 @@ const PHOTO_TYPES = [
   { key: "consent_procedure", label: "Procedure Consent", icon: "P" },
   { key: "consent_social", label: "Social Media Consent", icon: "S" },
   { key: "consent_data", label: "Data Use Consent", icon: "D" },
-  { key: "medicare", label: "Primary Insurance", icon: "$" },
-  { key: "medicare_secondary", label: "Secondary Insurance", icon: "$" },
+  { key: "insurance_primary_front", label: "Primary Insurance (Front)", icon: "$" },
+  { key: "insurance_primary_back", label: "Primary Insurance (Back)", icon: "$" },
+  { key: "insurance_secondary_front", label: "Secondary Insurance (Front)", icon: "$" },
+  { key: "insurance_secondary_back", label: "Secondary Insurance (Back)", icon: "$" },
   { key: "serial", label: "Device Sticker (top)", icon: "#" },
   { key: "needles", label: "Needles Sticker (bottom)", icon: "#" },
   { key: "earmap", label: "Ear Map", icon: "👂" },
@@ -327,6 +329,11 @@ function App() {
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
   const [dupModal, setDupModal] = useState(null); // {existing: {...}, source} when a duplicate referral is detected
   const [parseQueue, setParseQueue] = useState([]); // [{id, status, parsed, error, fileName}] for multi-photo batch parse
+  const [userProfile, setUserProfile] = useState(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [sitesList, setSitesList] = useState([]);
+  const [cosignQueue, setCosignQueue] = useState([]);
 
   // Inline stopwatch for sensory exam (SLS, 10m walk). No navigation away from app.
   const [swRunning, setSwRunning] = useState(false);
@@ -351,6 +358,57 @@ function App() {
     var s = ms / 1000;
     return s.toFixed(1);
   }
+
+  // ---------- USER PROFILE / COSIGN ----------
+  // Helper: stamp user context onto every backend payload for signature/cosign routing
+  function withUserContext(payload) {
+    var email = (window.__currentUser && window.__currentUser.email) ? window.__currentUser.email : "";
+    var siteId = (userProfile && userProfile.locations && userProfile.locations[0]) ? userProfile.locations[0] : "";
+    return Object.assign({}, payload, { userEmail: email, userSiteId: siteId });
+  }
+
+  // Fetch user profile + sites once auth resolves
+  useEffect(function() {
+    if (!sheetUrl) return;
+    var email = window.__currentUser && window.__currentUser.email;
+    if (!email) return;
+    fetch(sheetUrl, {
+      method: "POST",
+      body: JSON.stringify({ _action: "getUserProfile", email: email })
+    }).then(function(r){return r.json()}).then(function(j) {
+      if (j && j.status === "ok") {
+        setUserProfile(j.profile);
+        setProfileLoaded(true);
+        if (!j.profile || !j.profile.role || !j.profile.signatureUrl) {
+          setShowSettings(true);
+        }
+      } else {
+        setProfileLoaded(true);
+      }
+    }).catch(function(){ setProfileLoaded(true); });
+
+    fetch(sheetUrl, {
+      method: "POST",
+      body: JSON.stringify({ _action: "listSites" })
+    }).then(function(r){return r.json()}).then(function(j) {
+      if (j && j.status === "ok") setSitesList(j.sites || []);
+    }).catch(function(){});
+  }, [sheetUrl, window.__currentUser && window.__currentUser.email]);
+
+  // Fetch cosign queue for physicians
+  function refreshCosignQueue() {
+    if (!sheetUrl || !userProfile) return;
+    if (String(userProfile.role).toLowerCase() !== "physician") return;
+    var email = window.__currentUser && window.__currentUser.email;
+    if (!email) return;
+    fetch(sheetUrl, {
+      method: "POST",
+      body: JSON.stringify({ _action: "listCosignQueue", email: email })
+    }).then(function(r){return r.json()}).then(function(j) {
+      if (j && j.status === "ok") setCosignQueue(j.queue || []);
+    }).catch(function(){});
+  }
+  useEffect(function() { refreshCosignQueue(); }, [sheetUrl, userProfile, view]);
 
   function generatePatientId() {
     var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -874,7 +932,7 @@ function App() {
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
     // Save to cloud
     if (sheetUrl) {
-      var cloudData = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
+      var cloudData = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
       fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) })
         .then(function() { flash("Draft saved locally + cloud"); })
         .catch(function() { flash("Draft saved locally (cloud failed)", "warn"); });
@@ -903,7 +961,7 @@ function App() {
     setDrafts(updated);
     try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); } catch(e) {}
     if (sheetUrl) {
-      var cloudData = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
+      var cloudData = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
       try {
         fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) });
         setLastAutoSave(new Date());
@@ -1028,10 +1086,10 @@ function App() {
           try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
           var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
           flash((matched ? matched.label : photoType) + " captured");
-          // Auto-parse Medicare card and device sticker
-          if (photoType === "medicare") {
+          // Auto-parse insurance card front (where the member ID lives) and device sticker
+          if (photoType === "insurance_primary_front") {
             parseMedicareCard(compressed, false);
-          } else if (photoType === "medicare_secondary") {
+          } else if (photoType === "insurance_secondary_front") {
             parseMedicareCard(compressed, true);
           } else if (photoType === "serial") {
             parseDeviceSticker(compressed, "device");
@@ -1046,6 +1104,77 @@ function App() {
       reader.readAsDataURL(file);
     };
     input.click();
+  }
+
+  // Clipboard-paste variant of capturePhoto — reads the clipboard via navigator.clipboard.read()
+  // and stores the image under the given photoType. Used for pasting insurance card images
+  // from Spruce/screenshots on desktop.
+  async function pasteClipboardPhoto(photoType) {
+    var pid = photoPatientId || form.patientId;
+    if (!pid) { flash("Enter a Patient ID first", "err"); return; }
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      flash("Clipboard paste not supported in this browser — use Capture instead", "err");
+      return;
+    }
+    try {
+      var items = await navigator.clipboard.read();
+      var blob = null;
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        for (var t = 0; t < item.types.length; t++) {
+          if (item.types[t].indexOf("image/") === 0) {
+            blob = await item.getType(item.types[t]);
+            break;
+          }
+        }
+        if (blob) break;
+      }
+      if (!blob) { flash("No image on clipboard", "err"); return; }
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        var img = new Image();
+        img.onload = function() {
+          var canvas = document.createElement("canvas");
+          var maxDim = 1200; var w = img.width; var h = img.height;
+          if (w > maxDim || h > maxDim) { if (w > h) { h = h*maxDim/w; w = maxDim; } else { w = w*maxDim/h; h = maxDim; } }
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          var compressed = canvas.toDataURL("image/jpeg", 0.7);
+          var newPhoto = { id: Date.now(), patientId: pid, type: photoType, timestamp: new Date().toISOString(), data: compressed };
+          var filtered = photos.filter(function(p){ return !(p.patientId === pid && p.type === photoType); });
+          var updated = filtered.concat([newPhoto]);
+          setPhotos(updated);
+          try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
+          var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
+          flash((matched ? matched.label : photoType) + " pasted");
+          if (photoType === "insurance_primary_front") parseMedicareCard(compressed, false);
+          else if (photoType === "insurance_secondary_front") parseMedicareCard(compressed, true);
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(blob);
+    } catch(e) {
+      flash("Clipboard read failed: " + e.toString(), "err");
+    }
+  }
+
+  // Manually fire the Twilio SMS asking for insurance card photos. Button on the intake form.
+  async function requestInsuranceCards() {
+    if (!form.phone) { flash("Patient phone required", "err"); return; }
+    if (!sheetUrl) { flash("No script URL", "err"); return; }
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          _action: "sendInsuranceRequest",
+          phone: form.phone,
+          patientName: patientName || ""
+        })
+      });
+      var j = await resp.json();
+      if (j.status === "ok") flash(j.message || "SMS sent");
+      else flash("SMS failed: " + (j.message || "unknown"), "err");
+    } catch(e) { flash("SMS error: " + e.toString(), "err"); }
   }
 
   function getSigCoords(e, canvas) {
@@ -1760,18 +1889,26 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       updated[form.patientId] = draftData;
       setDrafts(updated);
       storage.set(DRAFTS_KEY, JSON.stringify(updated));
-      var saveDraftPayload = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
+      var saveDraftPayload = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(saveDraftPayload) });
 
       // Then generate the preauth packet
-      var payload = {
+      // Include any captured insurance card photos so the biller gets a standalone Insurance Cards doc
+      var pid = form.patientId;
+      var insurancePhotos = photos.filter(function(p) {
+        return p.patientId === pid && p.type && p.type.indexOf("insurance_") === 0;
+      }).map(function(p) {
+        return { type: p.type, data: p.data };
+      });
+      var payload = withUserContext({
         _action: "generatePreauth",
         patientId: form.patientId,
         patientName: patientName,
         date: form.date,
         hnpText: generateHnP(),
-        lomnText: generateLOMN()
-      };
+        lomnText: generateLOMN(),
+        insuranceCardPhotos: insurancePhotos
+      });
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
       flash("Draft saved + preauth packet sent to biller", "ok");
     } catch(e) {
@@ -1917,7 +2054,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     // Also sync the draft to cloud so other devices can load it
     if (sheetUrl) {
       try {
-        var draftSync = Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName });
+        var draftSync = withUserContext(Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName }));
         fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(draftSync) });
       } catch(e) {}
     }
@@ -1949,6 +2086,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           submitData._noteText = generateNote();
         }
         // Use real cors so we can verify the response and only clear photos on confirmed success
+        submitData = withUserContext(submitData);
         var resp = await fetch(sheetUrl, {method:"POST", body:JSON.stringify(submitData)});
         var result = await resp.json();
         if (result.status === "ok") {
@@ -2082,10 +2220,17 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   return (
     <div className="max-w-lg mx-auto bg-white min-h-screen">
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
-        {[["referrals","Referrals"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
-          var v = item[0], l = item[1];
-          return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
-        })}
+        {(function() {
+          var tabs = [["referrals","Referrals"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]];
+          if (userProfile && String(userProfile.role).toLowerCase() === "physician") {
+            tabs.push(["cosign","Cosign" + (cosignQueue.length ? " (" + cosignQueue.length + ")" : "")]);
+          }
+          return tabs.map(function(item) {
+            var v = item[0], l = item[1];
+            return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
+          });
+        })()}
+        <button onClick={function(){setShowSettings(true)}} className="px-3 py-2.5 text-gray-400 text-sm" title="Profile settings">⚙</button>
         <button onClick={function(){setShowConfig(!showConfig)}} className="px-3 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
       </div>
 
@@ -2616,16 +2761,25 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <div className="text-xs font-semibold text-gray-500">INSURANCE</div>
                       {(function(){
                         var pid = form.patientId;
-                        var hasPrimary = pid && photos.some(function(p){return p.patientId===pid && p.type==="medicare"});
-                        var hasSecondary = pid && photos.some(function(p){return p.patientId===pid && p.type==="medicare_secondary"});
+                        function has(t) { return pid && photos.some(function(p){return p.patientId===pid && p.type===t}); }
+                        function slot(label, key) {
+                          var present = has(key);
+                          return (
+                            <div key={key} className="flex items-center gap-1">
+                              <span className="text-xs text-gray-600 w-16">{label}</span>
+                              <button onClick={function(){capturePhoto(key)}} className={"px-1.5 py-0.5 text-xs rounded " + (present ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")} title="Capture/Upload">📷</button>
+                              <button onClick={function(){pasteClipboardPhoto(key)}} className="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600" title="Paste from clipboard">📋</button>
+                              {present && <span className="text-xs text-green-600">✓</span>}
+                            </div>
+                          );
+                        }
                         return (
-                          <div className="flex gap-1">
-                            <button onClick={function(){capturePhoto("medicare")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasPrimary ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
-                              {hasPrimary ? "✓ Primary" : "📷 Primary"}
-                            </button>
-                            <button onClick={function(){capturePhoto("medicare_secondary")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasSecondary ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
-                              {hasSecondary ? "✓ Secondary" : "📷 Secondary"}
-                            </button>
+                          <div className="flex flex-col gap-1">
+                            {slot("1° Front", "insurance_primary_front")}
+                            {slot("1° Back", "insurance_primary_back")}
+                            {slot("2° Front", "insurance_secondary_front")}
+                            {slot("2° Back", "insurance_secondary_back")}
+                            <button onClick={requestInsuranceCards} className="mt-1 px-2 py-1 text-xs rounded bg-purple-100 text-purple-700 font-medium" title="Send SMS to patient requesting insurance card photos">📱 Text patient for cards</button>
                           </div>
                         );
                       })()}
@@ -3298,6 +3452,64 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         </div>
       )}
 
+      {view === "cosign" && (
+        <div className="p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-base font-semibold">Pending Cosignatures</h2>
+            <button onClick={refreshCosignQueue} className="text-xs text-blue-600 underline">Refresh</button>
+          </div>
+          {cosignQueue.length === 0 && <div className="text-sm text-gray-500">Nothing pending.</div>}
+          {cosignQueue.map(function(item) {
+            return (
+              <div key={item.cosignId} className="border border-gray-200 rounded p-3 mb-2">
+                <div className="text-sm font-medium">{item.docType}</div>
+                <div className="text-xs text-gray-600">Patient: {item.patientId}</div>
+                <div className="text-xs text-gray-600">Author: {item.authorEmail} ({item.authorRole})</div>
+                <div className="text-xs text-gray-500">{item.createdAt ? new Date(item.createdAt).toLocaleString() : ""}</div>
+                {item.notes && <div className="text-xs text-orange-600 mt-1">{item.notes}</div>}
+                <div className="flex gap-2 mt-2">
+                  <a href={item.docUrl} target="_blank" rel="noreferrer" className="flex-1 py-1.5 text-center border border-gray-300 rounded text-xs">Review</a>
+                  <button
+                    onClick={function() {
+                      if (!confirm("Cosign " + item.docType + " for " + item.patientId + "? Your saved signature will be appended to the document.")) return;
+                      fetch(sheetUrl, {
+                        method: "POST",
+                        body: JSON.stringify({
+                          _action: "signCosign",
+                          cosignId: item.cosignId
+                        })
+                      }).then(function(r){return r.json()}).then(function(j) {
+                        if (j && j.status === "ok") {
+                          flash("Cosigned");
+                          setCosignQueue(function(prev){return prev.filter(function(c){return c.cosignId !== item.cosignId})});
+                        } else {
+                          flash("Cosign failed: " + (j && j.message || "unknown"), "err");
+                        }
+                      }).catch(function(e){ flash("Cosign error: " + e, "err"); });
+                    }}
+                    className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">
+                    Sign
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ========== SETTINGS / PROFILE MODAL ========== */}
+      {showSettings && (
+        <SettingsModal
+          sheetUrl={sheetUrl}
+          email={window.__currentUser ? window.__currentUser.email : ""}
+          profile={userProfile}
+          sitesList={sitesList}
+          onClose={function(){ setShowSettings(false); }}
+          onSaved={function(p){ setUserProfile(p); setShowSettings(false); flash("Profile saved"); }}
+          flash={flash}
+        />
+      )}
+
       {/* ========== SIGNATURE MODAL ========== */}
       {sigModalType && (
         <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" onClick={function(e){if(e.target===e.currentTarget)setSigModalType(null)}}>
@@ -3329,6 +3541,164 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SettingsModal(props) {
+  var p = props.profile || {};
+  const [displayName, setDisplayName] = useState(p.displayName || "");
+  const [credentials, setCredentials] = useState(p.credentials || "");
+  const [role, setRole] = useState(p.role || "");
+  const [locations, setLocations] = useState(p.locations || []);
+  const [licensedStates, setLicensedStates] = useState((p.licensedStates || []).join(", "));
+  const [sigImage, setSigImage] = useState(p.signatureUrl ? "EXISTING" : "");
+  const [drawing, setDrawing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const canvasRef = React.useRef(null);
+
+  function toggleLoc(siteId) {
+    setLocations(function(prev) {
+      return prev.indexOf(siteId) === -1 ? prev.concat([siteId]) : prev.filter(function(s){return s !== siteId});
+    });
+  }
+
+  function startDraw(e) {
+    setDrawing(true);
+    var c = canvasRef.current; if (!c) return;
+    var rect = c.getBoundingClientRect();
+    var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    var y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+    var ctx = c.getContext("2d");
+    ctx.beginPath(); ctx.moveTo(x, y);
+  }
+  function moveDraw(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var c = canvasRef.current; if (!c) return;
+    var rect = c.getBoundingClientRect();
+    var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    var y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+    var ctx = c.getContext("2d");
+    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.strokeStyle = "#000";
+    ctx.lineTo(x, y); ctx.stroke();
+  }
+  function endDraw() {
+    setDrawing(false);
+    if (canvasRef.current) setSigImage(canvasRef.current.toDataURL("image/png"));
+  }
+  function clearSig() {
+    var c = canvasRef.current;
+    if (c) { var ctx = c.getContext("2d"); ctx.clearRect(0, 0, c.width, c.height); }
+    setSigImage("");
+  }
+
+  function save() {
+    if (!role) { props.flash("Role is required", "err"); return; }
+    if (!displayName) { props.flash("Display name is required", "err"); return; }
+    if (!sigImage) { props.flash("Signature is required", "err"); return; }
+    if (locations.length === 0) { props.flash("Select at least one location", "err"); return; }
+    setSaving(true);
+    var body = {
+      _action: "saveUserProfile",
+      email: props.email,
+      displayName: displayName,
+      credentials: credentials,
+      role: role,
+      locations: locations,
+      licensedStates: licensedStates.split(",").map(function(s){return s.trim().toUpperCase()}).filter(Boolean),
+      signatureUrl: p.signatureUrl || ""
+    };
+    if (sigImage && sigImage !== "EXISTING") body.signatureImage = sigImage;
+    fetch(props.sheetUrl, { method: "POST", body: JSON.stringify(body) })
+      .then(function(r){return r.json()})
+      .then(function(j) {
+        setSaving(false);
+        if (j && j.status === "ok") props.onSaved(j.profile);
+        else props.flash("Save failed: " + (j && j.message || "unknown"), "err");
+      })
+      .catch(function(e) { setSaving(false); props.flash("Save failed: " + e, "err"); });
+  }
+
+  var ic = "w-full p-2 border border-gray-300 rounded text-sm";
+  var lc = "block text-xs font-semibold text-gray-700 mb-1";
+  var isPhysician = String(role).toLowerCase() === "physician";
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg max-w-md w-full max-h-full overflow-y-auto p-4">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="text-lg font-semibold">User Profile</h2>
+          {p.role && <button onClick={props.onClose} className="text-gray-400 text-xl">&times;</button>}
+        </div>
+        {!p.role && (
+          <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs p-2 rounded mb-3">
+            Complete your profile to start using the app. This determines whether your documents need cosignature.
+          </div>
+        )}
+        <div className="space-y-3">
+          <div>
+            <label className={lc}>Display Name</label>
+            <input className={ic} value={displayName} onChange={function(e){setDisplayName(e.target.value)}} placeholder="Jane Doe" />
+          </div>
+          <div>
+            <label className={lc}>Credentials</label>
+            <input className={ic} value={credentials} onChange={function(e){setCredentials(e.target.value)}} placeholder="RN, BSN" />
+          </div>
+          <div>
+            <label className={lc}>Role</label>
+            <select className={ic} value={role} onChange={function(e){setRole(e.target.value)}}>
+              <option value="">— Select —</option>
+              <option value="ma">Medical Assistant</option>
+              <option value="apc">Nurse / NP / PA</option>
+              <option value="physician">Physician</option>
+            </select>
+            {role && role !== "physician" && (
+              <div className="text-xs text-gray-500 mt-1">Your documents will require physician cosignature.</div>
+            )}
+          </div>
+          <div>
+            <label className={lc}>Practice Locations</label>
+            {props.sitesList.length === 0 && (
+              <div className="text-xs text-red-600">No sites configured. Admin: add rows to the Sites tab in the sheet.</div>
+            )}
+            <div className="space-y-1">
+              {props.sitesList.map(function(s) {
+                return (
+                  <label key={s.siteId} className="flex items-center text-sm">
+                    <input type="checkbox" className="mr-2"
+                      checked={locations.indexOf(s.siteId) !== -1}
+                      onChange={function(){toggleLoc(s.siteId)}} />
+                    {s.name} ({s.state})
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+          {isPhysician && (
+            <div>
+              <label className={lc}>Licensed States (comma separated)</label>
+              <input className={ic} value={licensedStates} onChange={function(e){setLicensedStates(e.target.value)}} placeholder="DE, MD, VA" />
+              <div className="text-xs text-gray-500 mt-1">Used to route cosign requests when no physician is mapped to a specific site.</div>
+            </div>
+          )}
+          <div>
+            <label className={lc}>Signature {p.signatureUrl && sigImage === "EXISTING" && <span className="text-green-600">(saved — draw to replace)</span>}</label>
+            <canvas ref={canvasRef} width={350} height={120}
+              className="w-full border border-gray-300 rounded bg-white"
+              style={{touchAction: "none"}}
+              onMouseDown={startDraw} onMouseMove={moveDraw} onMouseUp={endDraw} onMouseLeave={endDraw}
+              onTouchStart={startDraw} onTouchMove={moveDraw} onTouchEnd={endDraw} />
+            <button onClick={clearSig} className="mt-1 text-xs text-gray-500 underline">Clear</button>
+          </div>
+          <div className="flex gap-2 pt-2">
+            {p.role && <button onClick={props.onClose} className="flex-1 py-2 border border-gray-300 rounded text-sm">Cancel</button>}
+            <button onClick={save} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:opacity-50">
+              {saving ? "Saving..." : "Save Profile"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
