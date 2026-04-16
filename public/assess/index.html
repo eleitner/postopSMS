@@ -25,7 +25,7 @@ const STORAGE_KEY = "dpn-assessments";
 const DRAFTS_KEY = "dpn-drafts";
 const PHOTOS_KEY = "dpn-photos";
 const SHEET_URL_KEY = "dpn-sheet-url";
-const DEFAULT_SHEET_URL = "https://script.google.com/macros/s/AKfycbzZyM-qctswkkk17AQewg36TAddU9lSvtQmUfH1Ffqgi-Q4zwV8TQq08REreYLSOEAB/exec";
+const DEFAULT_SHEET_URL = "https://script.google.com/a/macros/leitneranesthesia.com/s/AKfycbzF12eGtZJesIFLDkusV-MUx7OS88XuXC-fr6-EqoEeW6TnQLts5u2vSNtk5PpI5nUn/exec";
 const DIRECTORY_KEY = "dpn-directory";
 
 const storage = {
@@ -607,7 +607,7 @@ function App() {
       if (secondary.memberId) set("memberId2", secondary.memberId);
     }
     var id = generatePatientId();
-    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake" }); });
+    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake", _referralRowIndex: ref.rowIndex || null }); });
     // Save to directory
     if (ref.name) {
       var d = directory.slice();
@@ -748,16 +748,84 @@ function App() {
     } catch(e) { flash("Error: " + e.toString(), "err"); }
   }
 
+  // Downscale a camera photo / image file to fit within Anthropic's 5 MB per-image limit
+  // while preserving enough detail for OCR on referral text. Returns a Promise<string>
+  // resolving to a base64 data URL. Uses canvas to resize+recompress client-side.
+  // Target: max 2000px on the long edge, JPEG quality 0.85, which lands under 1 MB for
+  // typical document photos. Retries with lower quality if the first attempt is still big.
+  function downscaleImageFile(file) {
+    return new Promise(function(resolve, reject) {
+      // Short-circuit for small files (already under threshold) and non-images (PDFs etc.)
+      if (!file.type || file.type.indexOf("image/") !== 0) {
+        var reader0 = new FileReader();
+        reader0.onload = function(ev) { resolve(ev.target.result); };
+        reader0.onerror = function() { reject(new Error("Read failed")); };
+        reader0.readAsDataURL(file);
+        return;
+      }
+      // If the file is already small enough, skip the canvas round trip (saves CPU + memory)
+      if (file.size < 4 * 1024 * 1024) {
+        var reader1 = new FileReader();
+        reader1.onload = function(ev) { resolve(ev.target.result); };
+        reader1.onerror = function() { reject(new Error("Read failed")); };
+        reader1.readAsDataURL(file);
+        return;
+      }
+
+      var img = new Image();
+      var objectUrl = URL.createObjectURL(file);
+      img.onload = function() {
+        try {
+          var maxDim = 2000;
+          var w = img.naturalWidth, h = img.naturalHeight;
+          if (w > maxDim || h > maxDim) {
+            if (w >= h) { h = Math.round(h * (maxDim / w)); w = maxDim; }
+            else { w = Math.round(w * (maxDim / h)); h = maxDim; }
+          }
+          var canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          var ctx = canvas.getContext("2d");
+          // White background in case the source has alpha
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          // Start at q=0.85. If the resulting base64 decodes to over ~4.5MB, retry at q=0.7, then 0.55.
+          function tryQuality(q) {
+            var dataUrl = canvas.toDataURL("image/jpeg", q);
+            // Estimate decoded byte size: base64 length * 0.75, minus the "data:image/jpeg;base64," prefix
+            var b64 = dataUrl.split(",")[1] || "";
+            var estBytes = Math.floor(b64.length * 0.75);
+            if (estBytes > 4500000 && q > 0.5) {
+              return tryQuality(q - 0.15);
+            }
+            return dataUrl;
+          }
+          var result = tryQuality(0.85);
+          URL.revokeObjectURL(objectUrl);
+          resolve(result);
+        } catch(err) {
+          URL.revokeObjectURL(objectUrl);
+          reject(err);
+        }
+      };
+      img.onerror = function() {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Image decode failed"));
+      };
+      img.src = objectUrl;
+    });
+  }
+
   function handleReferralPhotoCapture(e) {
     var files = Array.from(e.target.files || []);
     if (!files.length) return;
 
     // Single-file path: use existing flow that pre-fills the NEW REFERRAL form
     if (files.length === 1) {
-      var reader = new FileReader();
-      reader.onload = function(ev) { parseReferralPhoto(ev.target.result); };
-      reader.onerror = function() { flash("Failed to read photo file, try again", "err"); };
-      reader.readAsDataURL(files[0]);
+      downscaleImageFile(files[0])
+        .then(function(dataUrl) { parseReferralPhoto(dataUrl); })
+        .catch(function(err) { flash("Failed to read photo: " + err.toString(), "err"); });
       e.target.value = ""; // allow re-selection of same file
       return;
     }
@@ -772,16 +840,15 @@ function App() {
 
     files.forEach(function(file, i) {
       var qid = newItems[i].id;
-      var reader = new FileReader();
-      reader.onload = function(ev) { parseReferralToQueue(qid, ev.target.result); };
-      reader.onerror = function() {
-        setParseQueue(function(q){
-          return q.map(function(item){
-            return item.id === qid ? Object.assign({}, item, { status: "error", error: "Read failed" }) : item;
+      downscaleImageFile(file)
+        .then(function(dataUrl) { parseReferralToQueue(qid, dataUrl); })
+        .catch(function(err) {
+          setParseQueue(function(q){
+            return q.map(function(item){
+              return item.id === qid ? Object.assign({}, item, { status: "error", error: "Read failed: " + err.toString() }) : item;
+            });
           });
         });
-      };
-      reader.readAsDataURL(file);
     });
 
     e.target.value = ""; // allow re-selection
@@ -930,6 +997,8 @@ function App() {
     updated[form.patientId] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
+    // Reverse-sync corrections back to the source referral row
+    syncReferralCorrections();
     // Save to cloud
     if (sheetUrl) {
       var cloudData = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
@@ -939,6 +1008,28 @@ function App() {
     } else {
       flash("Draft saved locally");
     }
+  }
+
+  // Reverse-sync corrected demographics + insurance back to the source referral row,
+  // so the Referrals tab card stays in sync with the MA's corrections during intake.
+  // Fire-and-forget; never blocks the UI. No-ops if the form wasn't loaded from a referral.
+  function syncReferralCorrections() {
+    if (!form._referralRowIndex || !sheetUrl) return;
+    var payload = withUserContext({
+      _action: "updateReferralCorrections",
+      rowIndex: form._referralRowIndex,
+      patientName: patientName || "",
+      dob: form.dob || "",
+      phone: form.phone || "",
+      referringProvider: form.referringProvider || "",
+      insuranceName: form.insuranceName || "",
+      memberId: form.memberId || "",
+      insuranceName2: form.insuranceName2 || "",
+      memberId2: form.memberId2 || ""
+    });
+    try {
+      fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
+    } catch(e) {}
   }
 
   // Silent auto-save: fires on form changes, debounced, no flash messages
@@ -960,6 +1051,8 @@ function App() {
     updated[form.patientId] = draftData;
     setDrafts(updated);
     try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); } catch(e) {}
+    // Reverse-sync corrections back to the source referral row
+    syncReferralCorrections();
     if (sheetUrl) {
       var cloudData = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
       try {
@@ -1030,15 +1123,24 @@ function App() {
       rightFootPost: (draftData && draftData.rightFootPost) || Array(12).fill(false),
     });
     setForm(loaded);
-    // Also save to local drafts
+    // Restore patient name. Priority: explicit field on the draft (saved via saveDraft),
+    // then directory lookup as fallback. CRITICAL: explicitly clear stale name first —
+    // if the loaded draft has no name and no directory entry, we must NOT keep the
+    // previous patient's name in the field.
+    var nameFromDraft = draftData.patientName || draftData._patientName || "";
+    if (nameFromDraft) {
+      setPatientName(nameFromDraft);
+    } else {
+      var dirEntry = directory.find(function(e) { return e.id === pid; });
+      setPatientName(dirEntry ? dirEntry.name : "");
+    }
+    // Also save to local drafts. Use `pid` (the actual loaded ID) not `form.patientId`
+    // which is still the stale pre-setForm value due to React's async state updates.
     var updated = Object.assign({}, drafts);
-    updated[form.patientId] = draftData;
+    updated[pid] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
-    // Auto-fill name from directory
-    var dirEntry = directory.find(function(e) { return e.id === form.patientId; });
-    if (dirEntry) setPatientName(dirEntry.name);
-    flash("Loaded " + form.patientId);
+    flash("Loaded " + pid);
   }
 
   function getDraftList() { return Object.keys(drafts); }
@@ -1480,7 +1582,7 @@ function App() {
     var sexWord = form.sex === "M" ? "male" : form.sex === "F" ? "female" : "patient";
     var pmhxList = form.pmhx.length ? form.pmhx.join(", ") : "None";
     return "Patient Name: " + (patientName || "[Name]") + "\n" +
-"DOB: [DOB]\n" +
+"DOB: " + (form.dob || "[DOB]") + "\n" +
 "Visit Date: " + form.date + "\n" +
 "Provider: Dr. Lindsey A. Nelson\n" +
 "Referring Physician: " + (form.referringProvider || "[Provider]") + "\n\n" +
@@ -1934,6 +2036,13 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     if (!form.insuranceName) errors.push("REJECTION RISK: Primary insurance name missing");
     if (!form.memberId) errors.push("REJECTION RISK: Insurance member ID missing");
 
+    // Insurance card photos — biller requires these in the preauth packet
+    var pid = form.patientId;
+    var hasInsurancePhotos = pid && photos.some(function(p) {
+      return p.patientId === pid && p.type && p.type.indexOf("insurance_") === 0;
+    });
+    if (!hasInsurancePhotos) errors.push("REJECTION RISK: Insurance card photos not captured (biller requires front/back of card in preauth packet)");
+
     // Billing codes
     if (!form.dxCodes || !form.dxCodes.length) {
       errors.push("REJECTION RISK: No ICD-10 diagnosis codes selected");
@@ -2227,11 +2336,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           }
           return tabs.map(function(item) {
             var v = item[0], l = item[1];
-            return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
+            return <button key={v} onClick={function(){setView(v)}} className={"flex-1 min-w-0 px-1 py-2.5 text-xs font-medium truncate " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
           });
         })()}
-        <button onClick={function(){setShowSettings(true)}} className="px-3 py-2.5 text-gray-400 text-sm" title="Profile settings">⚙</button>
-        <button onClick={function(){setShowConfig(!showConfig)}} className="px-3 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
+        <button onClick={function(){setShowSettings(true)}} className="px-1.5 py-2.5 text-gray-400 text-sm" title="Profile settings">⚙</button>
+        <button onClick={function(){setShowConfig(!showConfig)}} className="px-1.5 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
       </div>
 
       {showConfig && (
@@ -2512,6 +2621,36 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     }
                   }} className="px-2 py-1.5 bg-red-50 text-red-500 rounded text-xs font-medium">×</button>
                 </div>
+                {ref.dncId && (
+                  <div className="flex gap-1 pt-1 border-t border-gray-100 mt-1">
+                    <span className="text-xs text-gray-400 py-1 mr-1">Billing:</span>
+                    {!ref.medicareSubmitted ? (
+                      <button onClick={function(){updateReferralStatus(ref.rowIndex, "medicareSubmitted", new Date().toISOString()); flash("Marked submitted to Medicare");}}
+                        className="py-1 px-2 bg-purple-50 text-purple-700 rounded text-xs font-medium">Mark Submitted</button>
+                    ) : !ref.reimbursement ? (
+                      <React.Fragment>
+                        <span className="text-xs text-purple-600 py-1">Submitted ✓</span>
+                        <button onClick={function(){
+                          var amt = prompt("Reimbursement amount (e.g. $4500):");
+                          if (amt && amt.trim()) {
+                            updateReferralStatus(ref.rowIndex, "reimbursement", amt.trim());
+                            updateReferralStatus(ref.rowIndex, "status", "Complete");
+                            flash("Marked reimbursed: " + amt.trim());
+                          }
+                        }} className="py-1 px-2 bg-green-50 text-green-700 rounded text-xs font-medium">Reimbursed</button>
+                        <button onClick={function(){
+                          var reason = prompt("Denial reason:");
+                          if (reason && reason.trim()) {
+                            updateReferralStatus(ref.rowIndex, "status", "Denied: " + reason.trim());
+                            flash("Marked denied");
+                          }
+                        }} className="py-1 px-2 bg-red-50 text-red-600 rounded text-xs font-medium">Denied</button>
+                      </React.Fragment>
+                    ) : (
+                      <span className="text-xs text-green-600 py-1">Reimbursed: {ref.reimbursement} ✓</span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           });
