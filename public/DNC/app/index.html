@@ -422,8 +422,10 @@ function App() {
 
   useEffect(function() {
     try { var r = storage.get(STORAGE_KEY); if (r && r.value) setRecords(JSON.parse(r.value)); } catch(e) {}
-    try { var u = storage.get(SHEET_URL_KEY); if (u && u.value) setSheetUrl(u.value); } catch(e) {}
-    try { var p = storage.get(PHOTOS_KEY); if (p && p.value) setPhotos(JSON.parse(p.value)); } catch(e) {}
+// DEV: ignore localStorage sheet URL; always use the dev default.
+// localStorage is shared across surghome.com paths, so production's saved URL
+// would otherwise leak into dev and write to the prod sheet.
+try { storage.set(SHEET_URL_KEY, DEFAULT_SHEET_URL); } catch(e) {}    try { var p = storage.get(PHOTOS_KEY); if (p && p.value) setPhotos(JSON.parse(p.value)); } catch(e) {}
     try { var d = storage.get(DRAFTS_KEY); if (d && d.value) setDrafts(JSON.parse(d.value)); } catch(e) {}
     try { var dir = storage.get(DIRECTORY_KEY); if (dir && dir.value) setDirectory(JSON.parse(dir.value)); } catch(e) {}
   }, []);
