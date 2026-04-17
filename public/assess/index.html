@@ -500,7 +500,9 @@ function App() {
     if (!sheetUrl) { flash("Set Google Apps Script URL in settings first", "err"); return; }
     setReferralsLoading(true);
     try {
-      var resp = await fetch(sheetUrl + "?action=getReferrals");
+      var email = window.__currentUser ? window.__currentUser.email : "";
+      var url = sheetUrl + "?action=getReferrals" + (email ? "&userEmail=" + encodeURIComponent(email) : "");
+      var resp = await fetch(url);
       var result = await resp.json();
       if (result.status === "ok") {
         setReferrals(result.referrals || []);
@@ -530,9 +532,18 @@ function App() {
         parts.push("Sec: " + (p.insuranceSecondary || "Secondary") + (p.memberIdSecondary ? " #" + p.memberIdSecondary : ""));
       }
       if (p.notes) parts.push(p.notes);
-      data = { name: p.name || "", dob: p.dob || "", phone: p.phone || "", provider: p.provider || "", notes: parts.join(" | "), orderDate: p.orderDate || "" };
+      data = {
+        name: p.name || "", dob: p.dob || "", phone: p.phone || "",
+        provider: p.provider || "", notes: parts.join(" | "), orderDate: p.orderDate || "",
+        state: p.state || "", referringClinicState: p.referringClinicState || "",
+        referringClinicName: p.referringClinicName || "", referringClinicCity: p.referringClinicCity || ""
+      };
     } else {
-      data = { name: newRef.name, dob: newRef.dob, phone: newRef.phone, provider: newRef.provider, notes: newRef.notes, orderDate: "" };
+      data = {
+        name: newRef.name, dob: newRef.dob, phone: newRef.phone,
+        provider: newRef.provider, notes: newRef.notes, orderDate: "",
+        state: newRef.state || "", referringClinicState: newRef.referringClinicState || ""
+      };
     }
     if (!data.name.trim() || !data.phone.trim()) { flash("Name and phone required", "err"); return; }
     if (!sheetUrl) { flash("Set database URL first", "err"); return; }
@@ -541,7 +552,8 @@ function App() {
         _action: "addReferral",
         patientName: data.name, dob: data.dob, phone: data.phone,
         referringProvider: data.provider, notes: data.notes,
-        orderDate: data.orderDate
+        orderDate: data.orderDate,
+        state: data.state || "", referringClinicState: data.referringClinicState || ""
       };
       if (forceAdd) payload.forceAdd = true;
       var resp = await fetch(sheetUrl, {
@@ -739,9 +751,18 @@ function App() {
           dob: p.dob || "",
           phone: p.phone || "",
           provider: p.provider || "",
-          notes: combinedNotes
+          notes: combinedNotes,
+          state: p.state || "",
+          referringClinicState: p.referringClinicState || "",
+          referringClinicName: p.referringClinicName || "",
+          referringClinicCity: p.referringClinicCity || ""
         });
-        flash("Parsed! Review and tap Add Referral");
+        var disagrees = result.disagreements || [];
+        if (disagrees.length > 0) {
+          flash("Parsed — VERIFY: " + disagrees.map(function(d){return d.field}).join(", ") + " had conflicting reads", "warn");
+        } else {
+          flash("Parsed! Review and tap Add Referral");
+        }
       } else {
         flash("Parse failed: " + (result.message || "unknown"), "err");
       }
@@ -879,10 +900,16 @@ function App() {
         if (p.memberIdSecondary && p.memberIdSecondary.indexOf("?") >= 0) formatWarnings.push("Secondary member ID has unreadable characters: " + p.memberIdSecondary);
         // Payer classification
         var payerTier = classifyPayer(p.insurancePrimary, p.insuranceSecondary);
+        // Capture confidence signals from two-pass pipeline (if present)
+        var confidence = result.confidence || null;
+        var disagreements = result.disagreements || [];
+        var pipelineWarnings = result.warnings || [];
+        // Merge pipeline warnings into formatWarnings
+        if (pipelineWarnings.length) formatWarnings = formatWarnings.concat(pipelineWarnings);
         setParseQueue(function(q){
           return q.map(function(item){
             return item.id === queueId
-              ? Object.assign({}, item, { status: "parsed", parsed: p, formatWarnings: formatWarnings, payerTier: payerTier })
+              ? Object.assign({}, item, { status: "parsed", parsed: p, formatWarnings: formatWarnings, payerTier: payerTier, confidence: confidence, disagreements: disagreements })
               : item;
           });
         });
@@ -2452,6 +2479,29 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                             {(p.insuranceSecondary || p.memberIdSecondary) && (
                               <div className="text-xs text-gray-500">Sec: {p.insuranceSecondary || ""}{p.memberIdSecondary ? " #" + p.memberIdSecondary : ""}</div>
                             )}
+                            {(p.referringClinicName || p.referringClinicCity) && (
+                              <div className="text-xs text-gray-400">Clinic: {p.referringClinicName || ""}{p.referringClinicCity ? ", " + p.referringClinicCity : ""}{p.referringClinicState ? " " + p.referringClinicState : ""}</div>
+                            )}
+                            {item.confidence && (function() {
+                              var suspects = [];
+                              for (var cf in item.confidence) {
+                                if (item.confidence[cf] === "suspect_disagreement" || item.confidence[cf] === "suspect_single_pass" || item.confidence[cf] === "format_error") {
+                                  var detail = "";
+                                  if (item.disagreements) {
+                                    var d = item.disagreements.find(function(x){return x.field === cf;});
+                                    if (d) detail = " (" + d.pass1 + " vs " + d.pass2 + ")";
+                                  }
+                                  suspects.push(cf + detail);
+                                }
+                              }
+                              if (!suspects.length) return null;
+                              return (
+                                <div className="mt-1 bg-yellow-100 border border-yellow-300 rounded p-1.5">
+                                  <div className="text-xs font-semibold text-yellow-800 mb-0.5">⚠ Verify — passes disagreed:</div>
+                                  {suspects.map(function(s, si) { return <div key={"s"+si} className="text-xs text-yellow-800">{s}</div>; })}
+                                </div>
+                              );
+                            })()}
                             {formatWarnings.length > 0 && (
                               <div className="mt-1 bg-yellow-100 border border-yellow-300 rounded p-1.5">
                                 <div className="text-xs font-semibold text-yellow-800 mb-0.5">⚠ Verify before adding:</div>
