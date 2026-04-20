@@ -25,7 +25,8 @@ const STORAGE_KEY = "dpn-assessments";
 const DRAFTS_KEY = "dpn-drafts";
 const PHOTOS_KEY = "dpn-photos";
 const SHEET_URL_KEY = "dpn-sheet-url";
-const DEFAULT_SHEET_URL = "https://script.google.com/macros/s/AKfycbzF12eGtZJesIFLDkusV-MUx7OS88XuXC-fr6-EqoEeW6TnQLts5u2vSNtk5PpI5nUn/exec";const DIRECTORY_KEY = "dpn-directory";
+const DEFAULT_SHEET_URL = "https://script.google.com/macros/s/AKfycbzZyM-qctswkkk17AQewg36TAddU9lSvtQmUfH1Ffqgi-Q4zwV8TQq08REreYLSOEAB/exec";
+const DIRECTORY_KEY = "dpn-directory";
 
 const storage = {
   get(k) { const v = localStorage.getItem(k); return v ? { value: v } : null; },
@@ -56,10 +57,8 @@ const PHOTO_TYPES = [
   { key: "consent_procedure", label: "Procedure Consent", icon: "P" },
   { key: "consent_social", label: "Social Media Consent", icon: "S" },
   { key: "consent_data", label: "Data Use Consent", icon: "D" },
-  { key: "insurance_primary_front", label: "Primary Insurance (Front)", icon: "$" },
-  { key: "insurance_primary_back", label: "Primary Insurance (Back)", icon: "$" },
-  { key: "insurance_secondary_front", label: "Secondary Insurance (Front)", icon: "$" },
-  { key: "insurance_secondary_back", label: "Secondary Insurance (Back)", icon: "$" },
+  { key: "medicare", label: "Primary Insurance", icon: "$" },
+  { key: "medicare_secondary", label: "Secondary Insurance", icon: "$" },
   { key: "serial", label: "Device Sticker (top)", icon: "#" },
   { key: "needles", label: "Needles Sticker (bottom)", icon: "#" },
   { key: "earmap", label: "Ear Map", icon: "👂" },
@@ -196,13 +195,16 @@ function classifyPayer(primary, secondary) {
   var isBCBS = /bcbs|blue\s*cross|blue\s*shield/.test(p) || /bcbs|blue\s*cross|blue\s*shield/.test(s);
   var hasSecondary = !!s;
 
-  // Green: plain Medicare with NO secondary
-  if (hasMedicare && !hasSecondary && !isMA) return { tier: "green", reason: "Medicare" };
-  // Yellow: BCBS Medicare Advantage (only MA plan currently approved)
+  // Green: traditional Medicare as primary, with or without a secondary. Supplements
+  // (Medigap, employer secondary) don't meaningfully slow DNC's preauth path —
+  // traditional Medicare is traditional Medicare either way.
+  if (hasMedicare && !isMA) return { tier: "green", reason: hasSecondary ? "Medicare + secondary" : "Medicare" };
+  // Yellow: any Medicare Advantage plan. BCBS MA is the established approval path;
+  // other MA plans (Humana, Aetna, UHC, etc.) are yellow too because the preauth
+  // is approvable but slower than traditional Medicare.
   if (isMA && isBCBS) return { tier: "yellow", reason: "BCBS Medicare Advantage" };
-  // Yellow: Medicare with any secondary (long preauth but approved path)
-  if (hasMedicare && hasSecondary) return { tier: "yellow", reason: "Medicare + secondary" };
-  // Red: everything else (other MA, commercial, Medicaid, unknown payer)
+  if (isMA) return { tier: "yellow", reason: "Medicare Advantage" };
+  // Red: everything else (commercial, Medicaid, unknown, Medicare supplement but no primary)
   return { tier: "red", reason: primary || secondary || "Non-Medicare payer" };
 }
 
@@ -281,6 +283,56 @@ const defaultState = {
   explantSiteClean: "Yes", explantInduration: "No", explantErythema: "No", explantTolerated: "Yes", explantComplication: "No", explantComplicationDetail: "", explantNotes: "",
 };
 
+// Self-contained stopwatch component. Each instance owns its own state — multiple
+// stopwatches can run independently on the same page. Used inline next to timed
+// measurements (SLS per leg, 10m walk) so MAs don't have to scroll or mentally
+// track which test the shared clock is for. No props needed; component renders
+// its own elapsed time and Start/Stop/Reset buttons.
+function Stopwatch() {
+  const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0); // ms
+  const [startTime, setStartTime] = useState(null);
+
+  useEffect(function() {
+    if (!running) return;
+    var interval = setInterval(function() {
+      setElapsed(Date.now() - startTime);
+    }, 50);
+    return function() { clearInterval(interval); };
+  }, [running, startTime]);
+
+  function start() {
+    setStartTime(Date.now() - elapsed);
+    setRunning(true);
+  }
+  function stop() { setRunning(false); }
+  function reset() { setRunning(false); setElapsed(0); setStartTime(null); }
+  var seconds = (elapsed / 1000).toFixed(1);
+
+  return (
+    <div className="bg-blue-50 rounded px-2 py-1.5 border border-blue-200">
+      <div className="flex items-center gap-2">
+        <div className="text-sm font-mono font-bold text-blue-700 w-14 tabular-nums">{seconds}s</div>
+        {!running && elapsed === 0 && (
+          <button onClick={start} className="flex-1 py-1 bg-green-600 text-white rounded text-xs font-medium">Start</button>
+        )}
+        {!running && elapsed > 0 && (
+          <React.Fragment>
+            <button onClick={start} className="flex-1 py-1 bg-green-600 text-white rounded text-xs font-medium">Resume</button>
+            <button onClick={reset} className="flex-1 py-1 bg-gray-200 text-gray-700 rounded text-xs font-medium">Reset</button>
+          </React.Fragment>
+        )}
+        {running && (
+          <React.Fragment>
+            <button onClick={stop} className="flex-1 py-1 bg-red-600 text-white rounded text-xs font-medium">Stop</button>
+            <button onClick={reset} className="flex-1 py-1 bg-gray-200 text-gray-700 rounded text-xs font-medium">Reset</button>
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [form, setForm] = useState(defaultState);
   const [records, setRecords] = useState([]);
@@ -328,86 +380,20 @@ function App() {
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
   const [dupModal, setDupModal] = useState(null); // {existing: {...}, source} when a duplicate referral is detected
   const [parseQueue, setParseQueue] = useState([]); // [{id, status, parsed, error, fileName}] for multi-photo batch parse
-  const [userProfile, setUserProfile] = useState(null);
-  const [profileLoaded, setProfileLoaded] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [sitesList, setSitesList] = useState([]);
-  const [cosignQueue, setCosignQueue] = useState([]);
+  // Call-outcome modal: opened when user taps "Call Patient" on a referral card.
+  // When non-null, shape is { ref: <referral object> }. Null = modal closed.
+  // This splits "tried to call" (most common) from "reached and doing intake now"
+  // so the card visual state doesn't falsely advance when a patient doesn't answer.
+  const [callModalRef, setCallModalRef] = useState(null);
+  const [callOutcome, setCallOutcome] = useState(""); // "no_answer" | "voicemail_full" | "left_vm" | "wrong_number" | "patient_hung_up" | "other"
+  const [callOutcomeReason, setCallOutcomeReason] = useState(""); // free-text for "other"
+  const [callSubmitting, setCallSubmitting] = useState(false);
+  // Inline patient name search on the Assess tab. Queries backend searchPatients,
+  // returns matches filtered to the current user's sites.
+  const [nameSearchQuery, setNameSearchQuery] = useState("");
+  const [nameSearchResults, setNameSearchResults] = useState([]);
+  const [nameSearchOpen, setNameSearchOpen] = useState(false);
 
-  // Inline stopwatch for sensory exam (SLS, 10m walk). No navigation away from app.
-  const [swRunning, setSwRunning] = useState(false);
-  const [swElapsed, setSwElapsed] = useState(0); // ms
-  const [swStartTime, setSwStartTime] = useState(null);
-
-  useEffect(function() {
-    if (!swRunning) return;
-    var interval = setInterval(function() {
-      setSwElapsed(Date.now() - swStartTime);
-    }, 50);
-    return function() { clearInterval(interval); };
-  }, [swRunning, swStartTime]);
-
-  function swStart() {
-    setSwStartTime(Date.now() - swElapsed);
-    setSwRunning(true);
-  }
-  function swStop() { setSwRunning(false); }
-  function swReset() { setSwRunning(false); setSwElapsed(0); setSwStartTime(null); }
-  function swFormat(ms) {
-    var s = ms / 1000;
-    return s.toFixed(1);
-  }
-
-  // ---------- USER PROFILE / COSIGN ----------
-  // Helper: stamp user context onto every backend payload for signature/cosign routing
-  function withUserContext(payload) {
-    var email = (window.__currentUser && window.__currentUser.email) ? window.__currentUser.email : "";
-    var siteId = (userProfile && userProfile.locations && userProfile.locations[0]) ? userProfile.locations[0] : "";
-    return Object.assign({}, payload, { userEmail: email, userSiteId: siteId });
-  }
-
-  // Fetch user profile + sites once auth resolves
-  useEffect(function() {
-    if (!sheetUrl) return;
-    var email = window.__currentUser && window.__currentUser.email;
-    if (!email) return;
-    fetch(sheetUrl, {
-      method: "POST",
-      body: JSON.stringify({ _action: "getUserProfile", email: email })
-    }).then(function(r){return r.json()}).then(function(j) {
-      if (j && j.status === "ok") {
-        setUserProfile(j.profile);
-        setProfileLoaded(true);
-        if (!j.profile || !j.profile.role || !j.profile.signatureUrl) {
-          setShowSettings(true);
-        }
-      } else {
-        setProfileLoaded(true);
-      }
-    }).catch(function(){ setProfileLoaded(true); });
-
-    fetch(sheetUrl, {
-      method: "POST",
-      body: JSON.stringify({ _action: "listSites" })
-    }).then(function(r){return r.json()}).then(function(j) {
-      if (j && j.status === "ok") setSitesList(j.sites || []);
-    }).catch(function(){});
-  }, [sheetUrl, window.__currentUser && window.__currentUser.email]);
-
-  // Fetch cosign queue for physicians
-  function refreshCosignQueue() {
-    if (!sheetUrl || !userProfile) return;
-    if (String(userProfile.role).toLowerCase() !== "physician") return;
-    var email = window.__currentUser && window.__currentUser.email;
-    if (!email) return;
-    fetch(sheetUrl, {
-      method: "POST",
-      body: JSON.stringify({ _action: "listCosignQueue", email: email })
-    }).then(function(r){return r.json()}).then(function(j) {
-      if (j && j.status === "ok") setCosignQueue(j.queue || []);
-    }).catch(function(){});
-  }
-  useEffect(function() { refreshCosignQueue(); }, [sheetUrl, userProfile, view]);
 
   function generatePatientId() {
     var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -499,9 +485,7 @@ function App() {
     if (!sheetUrl) { flash("Set Google Apps Script URL in settings first", "err"); return; }
     setReferralsLoading(true);
     try {
-      var email = window.__currentUser ? window.__currentUser.email : "";
-      var url = sheetUrl + "?action=getReferrals" + (email ? "&userEmail=" + encodeURIComponent(email) : "");
-      var resp = await fetch(url);
+      var resp = await fetch(sheetUrl + "?action=getReferrals");
       var result = await resp.json();
       if (result.status === "ok") {
         setReferrals(result.referrals || []);
@@ -531,18 +515,9 @@ function App() {
         parts.push("Sec: " + (p.insuranceSecondary || "Secondary") + (p.memberIdSecondary ? " #" + p.memberIdSecondary : ""));
       }
       if (p.notes) parts.push(p.notes);
-      data = {
-        name: p.name || "", dob: p.dob || "", phone: p.phone || "",
-        provider: p.provider || "", notes: parts.join(" | "), orderDate: p.orderDate || "",
-        state: p.state || "", referringClinicState: p.referringClinicState || "",
-        referringClinicName: p.referringClinicName || "", referringClinicCity: p.referringClinicCity || ""
-      };
+      data = { name: p.name || "", dob: p.dob || "", phone: p.phone || "", provider: p.provider || "", notes: parts.join(" | "), orderDate: p.orderDate || "" };
     } else {
-      data = {
-        name: newRef.name, dob: newRef.dob, phone: newRef.phone,
-        provider: newRef.provider, notes: newRef.notes, orderDate: "",
-        state: newRef.state || "", referringClinicState: newRef.referringClinicState || ""
-      };
+      data = { name: newRef.name, dob: newRef.dob, phone: newRef.phone, provider: newRef.provider, notes: newRef.notes, orderDate: "" };
     }
     if (!data.name.trim() || !data.phone.trim()) { flash("Name and phone required", "err"); return; }
     if (!sheetUrl) { flash("Set database URL first", "err"); return; }
@@ -551,8 +526,7 @@ function App() {
         _action: "addReferral",
         patientName: data.name, dob: data.dob, phone: data.phone,
         referringProvider: data.provider, notes: data.notes,
-        orderDate: data.orderDate,
-        state: data.state || "", referringClinicState: data.referringClinicState || ""
+        orderDate: data.orderDate
       };
       if (forceAdd) payload.forceAdd = true;
       var resp = await fetch(sheetUrl, {
@@ -584,6 +558,137 @@ function App() {
       });
       loadReferrals();
     } catch(e) { flash("Update error", "err"); }
+  }
+
+  // Sends a "did not reach patient" attempt to the backend. Bumps the row's
+  // call-attempt counter, stamps lastCallAt, appends a structured entry to the
+  // call log. Does NOT change status or assign a DNC ID — the referral stays
+  // in "Referral Received" state until someone actually reaches the patient
+  // and taps the intake path instead.
+  async function logCallAttempt(rowIndex, outcome, reason) {
+    if (!sheetUrl || !rowIndex) return;
+    setCallSubmitting(true);
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "logCallAttempt", rowIndex: rowIndex, outcome: outcome, reason: reason || "" })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        flash("Call attempt logged (" + result.callAttempts + " total)");
+        loadReferrals();
+      } else {
+        flash("Error: " + (result.message || "log failed"), "err");
+      }
+    } catch(e) {
+      flash("Error logging call: " + e.toString(), "err");
+    } finally {
+      setCallSubmitting(false);
+      setCallModalRef(null);
+      setCallOutcome("");
+      setCallOutcomeReason("");
+    }
+  }
+
+  // Debounced backend search on patient name. Backend filters to this user's
+  // sites automatically. Results populate the dropdown under the search input.
+  async function searchPatientsByName(query) {
+    if (!sheetUrl) return;
+    var q = String(query || "").trim();
+    if (q.length < 2) {
+      setNameSearchResults([]);
+      return;
+    }
+    try {
+      var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser) ? firebase.auth().currentUser.email : "";
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "searchPatients", query: q, userEmail: userEmail })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        setNameSearchResults(result.results || []);
+      }
+    } catch(e) { /* silent; don't flash for background search */ }
+  }
+
+  // Debounce the name search — wait for typing to pause before hitting backend.
+  // 300ms is comfortable: responsive but not flooding the script with requests.
+  useEffect(function() {
+    if (!nameSearchQuery || nameSearchQuery.length < 2) {
+      setNameSearchResults([]);
+      return;
+    }
+    var t = setTimeout(function() { searchPatientsByName(nameSearchQuery); }, 300);
+    return function() { clearTimeout(t); };
+  }, [nameSearchQuery]);
+
+  // Opens the call-outcome modal for this referral. "Start Intake" button is
+  // renamed to "Call Patient" — the button represents the *act* of calling, not
+  // the downstream consequence. When the modal returns: "Reached" → existing
+  // startIntakeFromReferral flow (generates DNC ID, loads form). Any other
+  // outcome → logCallAttempt writes a timestamped entry to the call log and
+  // the referral stays "Referral Received" so the card doesn't falsely advance.
+  // Fixes the bug where tapping Start Intake changed state even when the
+  // patient never picked up.
+  function openCallModal(ref) {
+    setCallModalRef(ref);
+    setCallOutcome("");
+    setCallOutcomeReason("");
+  }
+
+  // Submits a non-reached call attempt. Increments the server-side tally and
+  // optimistically updates the local referrals list so the tally display
+  // refreshes without waiting for a refetch.
+  async function submitCallAttempt() {
+    var ref = callModalRef;
+    if (!ref || !sheetUrl) return;
+    var outcomeLabels = {
+      "no_answer": "No answer",
+      "voicemail_full": "Voicemail full",
+      "left_vm": "Left voicemail",
+      "wrong_number": "Wrong number",
+      "patient_hung_up": "Patient hung up",
+      "other": "Other"
+    };
+    var outcomeText = outcomeLabels[callOutcome] || callOutcome || "No answer";
+    var reasonText = callOutcome === "other" ? callOutcomeReason : "";
+    setCallSubmitting(true);
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser) ? firebase.auth().currentUser.email : "";
+    try {
+      await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          _action: "logCallAttempt",
+          rowIndex: ref.rowIndex,
+          outcome: outcomeText,
+          reason: reasonText,
+          userEmail: userEmail
+        })
+      });
+      // Optimistic: bump tally locally so card updates without a refresh
+      setReferrals(function(prev) {
+        return prev.map(function(r) {
+          if (r.rowIndex !== ref.rowIndex) return r;
+          var newCount = (parseInt(r.callAttempts, 10) || 0) + 1;
+          var now = new Date();
+          var tsShort = (now.getMonth()+1)+"/"+now.getDate()+" "+((now.getHours()%12)||12)+":"+(now.getMinutes()<10?"0":"")+now.getMinutes()+(now.getHours()>=12?"pm":"am");
+          var entry = tsShort + " — " + outcomeText + (reasonText ? " (" + reasonText + ")" : "");
+          return Object.assign({}, r, {
+            callAttempts: newCount,
+            lastCallAt: now.toISOString(),
+            callLog: r.callLog ? (r.callLog + "\n" + entry) : entry
+          });
+        });
+      });
+      flash("Logged: " + outcomeText);
+    } catch(e) {
+      flash("Failed to log (will retry)", "warn");
+    }
+    setCallSubmitting(false);
+    setCallModalRef(null);
+    setCallOutcome("");
+    setCallOutcomeReason("");
   }
 
   function startIntakeFromReferral(ref) {
@@ -618,7 +723,7 @@ function App() {
       if (secondary.memberId) set("memberId2", secondary.memberId);
     }
     var id = generatePatientId();
-    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake", _referralRowIndex: ref.rowIndex || null }); });
+    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake" }); });
     // Save to directory
     if (ref.name) {
       var d = directory.slice();
@@ -750,91 +855,13 @@ function App() {
           dob: p.dob || "",
           phone: p.phone || "",
           provider: p.provider || "",
-          notes: combinedNotes,
-          state: p.state || "",
-          referringClinicState: p.referringClinicState || "",
-          referringClinicName: p.referringClinicName || "",
-          referringClinicCity: p.referringClinicCity || ""
+          notes: combinedNotes
         });
-        var disagrees = result.disagreements || [];
-        if (disagrees.length > 0) {
-          flash("Parsed — VERIFY: " + disagrees.map(function(d){return d.field}).join(", ") + " had conflicting reads", "warn");
-        } else {
-          flash("Parsed! Review and tap Add Referral");
-        }
+        flash("Parsed! Review and tap Add Referral");
       } else {
         flash("Parse failed: " + (result.message || "unknown"), "err");
       }
     } catch(e) { flash("Error: " + e.toString(), "err"); }
-  }
-
-  // Downscale a camera photo / image file to fit within Anthropic's 5 MB per-image limit
-  // while preserving enough detail for OCR on referral text. Returns a Promise<string>
-  // resolving to a base64 data URL. Uses canvas to resize+recompress client-side.
-  // Target: max 2000px on the long edge, JPEG quality 0.85, which lands under 1 MB for
-  // typical document photos. Retries with lower quality if the first attempt is still big.
-  function downscaleImageFile(file) {
-    return new Promise(function(resolve, reject) {
-      // Short-circuit for small files (already under threshold) and non-images (PDFs etc.)
-      if (!file.type || file.type.indexOf("image/") !== 0) {
-        var reader0 = new FileReader();
-        reader0.onload = function(ev) { resolve(ev.target.result); };
-        reader0.onerror = function() { reject(new Error("Read failed")); };
-        reader0.readAsDataURL(file);
-        return;
-      }
-      // If the file is already small enough, skip the canvas round trip (saves CPU + memory)
-      if (file.size < 4 * 1024 * 1024) {
-        var reader1 = new FileReader();
-        reader1.onload = function(ev) { resolve(ev.target.result); };
-        reader1.onerror = function() { reject(new Error("Read failed")); };
-        reader1.readAsDataURL(file);
-        return;
-      }
-
-      var img = new Image();
-      var objectUrl = URL.createObjectURL(file);
-      img.onload = function() {
-        try {
-          var maxDim = 2000;
-          var w = img.naturalWidth, h = img.naturalHeight;
-          if (w > maxDim || h > maxDim) {
-            if (w >= h) { h = Math.round(h * (maxDim / w)); w = maxDim; }
-            else { w = Math.round(w * (maxDim / h)); h = maxDim; }
-          }
-          var canvas = document.createElement("canvas");
-          canvas.width = w;
-          canvas.height = h;
-          var ctx = canvas.getContext("2d");
-          // White background in case the source has alpha
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, w, h);
-          ctx.drawImage(img, 0, 0, w, h);
-          // Start at q=0.85. If the resulting base64 decodes to over ~4.5MB, retry at q=0.7, then 0.55.
-          function tryQuality(q) {
-            var dataUrl = canvas.toDataURL("image/jpeg", q);
-            // Estimate decoded byte size: base64 length * 0.75, minus the "data:image/jpeg;base64," prefix
-            var b64 = dataUrl.split(",")[1] || "";
-            var estBytes = Math.floor(b64.length * 0.75);
-            if (estBytes > 4500000 && q > 0.5) {
-              return tryQuality(q - 0.15);
-            }
-            return dataUrl;
-          }
-          var result = tryQuality(0.85);
-          URL.revokeObjectURL(objectUrl);
-          resolve(result);
-        } catch(err) {
-          URL.revokeObjectURL(objectUrl);
-          reject(err);
-        }
-      };
-      img.onerror = function() {
-        URL.revokeObjectURL(objectUrl);
-        reject(new Error("Image decode failed"));
-      };
-      img.src = objectUrl;
-    });
   }
 
   function handleReferralPhotoCapture(e) {
@@ -843,9 +870,10 @@ function App() {
 
     // Single-file path: use existing flow that pre-fills the NEW REFERRAL form
     if (files.length === 1) {
-      downscaleImageFile(files[0])
-        .then(function(dataUrl) { parseReferralPhoto(dataUrl); })
-        .catch(function(err) { flash("Failed to read photo: " + err.toString(), "err"); });
+      var reader = new FileReader();
+      reader.onload = function(ev) { parseReferralPhoto(ev.target.result); };
+      reader.onerror = function() { flash("Failed to read photo file, try again", "err"); };
+      reader.readAsDataURL(files[0]);
       e.target.value = ""; // allow re-selection of same file
       return;
     }
@@ -860,15 +888,16 @@ function App() {
 
     files.forEach(function(file, i) {
       var qid = newItems[i].id;
-      downscaleImageFile(file)
-        .then(function(dataUrl) { parseReferralToQueue(qid, dataUrl); })
-        .catch(function(err) {
-          setParseQueue(function(q){
-            return q.map(function(item){
-              return item.id === qid ? Object.assign({}, item, { status: "error", error: "Read failed: " + err.toString() }) : item;
-            });
+      var reader = new FileReader();
+      reader.onload = function(ev) { parseReferralToQueue(qid, ev.target.result); };
+      reader.onerror = function() {
+        setParseQueue(function(q){
+          return q.map(function(item){
+            return item.id === qid ? Object.assign({}, item, { status: "error", error: "Read failed" }) : item;
           });
         });
+      };
+      reader.readAsDataURL(file);
     });
 
     e.target.value = ""; // allow re-selection
@@ -899,16 +928,10 @@ function App() {
         if (p.memberIdSecondary && p.memberIdSecondary.indexOf("?") >= 0) formatWarnings.push("Secondary member ID has unreadable characters: " + p.memberIdSecondary);
         // Payer classification
         var payerTier = classifyPayer(p.insurancePrimary, p.insuranceSecondary);
-        // Capture confidence signals from two-pass pipeline (if present)
-        var confidence = result.confidence || null;
-        var disagreements = result.disagreements || [];
-        var pipelineWarnings = result.warnings || [];
-        // Merge pipeline warnings into formatWarnings
-        if (pipelineWarnings.length) formatWarnings = formatWarnings.concat(pipelineWarnings);
         setParseQueue(function(q){
           return q.map(function(item){
             return item.id === queueId
-              ? Object.assign({}, item, { status: "parsed", parsed: p, formatWarnings: formatWarnings, payerTier: payerTier, confidence: confidence, disagreements: disagreements })
+              ? Object.assign({}, item, { status: "parsed", parsed: p, formatWarnings: formatWarnings, payerTier: payerTier })
               : item;
           });
         });
@@ -1017,45 +1040,26 @@ function App() {
 
   function saveDraft() {
     if (!form.patientId) { flash("Enter Patient ID", "err"); return; }
-    var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    // Embed patientName INTO draftData (not just on network payload). This is the
+    // fix for the "next-visit loses patient name" bug: the local copy in drafts
+    // (localStorage) had no name, so cross-session reloads on the same device
+    // showed "[Name]" in generated notes until the user retyped it. Now any path
+    // that reads a draft gets the name back.
+    var draftData = Object.assign({}, form, { savedAt: new Date().toISOString(), patientName: patientName });
     // Save locally
     var updated = Object.assign({}, drafts);
     updated[form.patientId] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
-    // Reverse-sync corrections back to the source referral row
-    syncReferralCorrections();
     // Save to cloud
     if (sheetUrl) {
-      var cloudData = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
+      var cloudData = Object.assign({}, draftData, { _action: "saveDraft" });
       fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) })
         .then(function() { flash("Draft saved locally + cloud"); })
         .catch(function() { flash("Draft saved locally (cloud failed)", "warn"); });
     } else {
       flash("Draft saved locally");
     }
-  }
-
-  // Reverse-sync corrected demographics + insurance back to the source referral row,
-  // so the Referrals tab card stays in sync with the MA's corrections during intake.
-  // Fire-and-forget; never blocks the UI. No-ops if the form wasn't loaded from a referral.
-  function syncReferralCorrections() {
-    if (!form._referralRowIndex || !sheetUrl) return;
-    var payload = withUserContext({
-      _action: "updateReferralCorrections",
-      rowIndex: form._referralRowIndex,
-      patientName: patientName || "",
-      dob: form.dob || "",
-      phone: form.phone || "",
-      referringProvider: form.referringProvider || "",
-      insuranceName: form.insuranceName || "",
-      memberId: form.memberId || "",
-      insuranceName2: form.insuranceName2 || "",
-      memberId2: form.memberId2 || ""
-    });
-    try {
-      fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
-    } catch(e) {}
   }
 
   // Silent auto-save: fires on form changes, debounced, no flash messages
@@ -1072,15 +1076,14 @@ function App() {
       (form.painDescriptors && form.painDescriptors.length > 0) ||
       (form.priorTx && form.priorTx.length > 0);
     if (!hasContent) return;
-    var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
+    // Same fix as saveDraft: embed name into the persisted object, not just network.
+    var draftData = Object.assign({}, form, { savedAt: new Date().toISOString(), patientName: patientName });
     var updated = Object.assign({}, drafts);
     updated[form.patientId] = draftData;
     setDrafts(updated);
     try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); } catch(e) {}
-    // Reverse-sync corrections back to the source referral row
-    syncReferralCorrections();
     if (sheetUrl) {
-      var cloudData = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
+      var cloudData = Object.assign({}, draftData, { _action: "saveDraft" });
       try {
         fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) });
         setLastAutoSave(new Date());
@@ -1149,24 +1152,15 @@ function App() {
       rightFootPost: (draftData && draftData.rightFootPost) || Array(12).fill(false),
     });
     setForm(loaded);
-    // Restore patient name. Priority: explicit field on the draft (saved via saveDraft),
-    // then directory lookup as fallback. CRITICAL: explicitly clear stale name first —
-    // if the loaded draft has no name and no directory entry, we must NOT keep the
-    // previous patient's name in the field.
-    var nameFromDraft = draftData.patientName || draftData._patientName || "";
-    if (nameFromDraft) {
-      setPatientName(nameFromDraft);
-    } else {
-      var dirEntry = directory.find(function(e) { return e.id === pid; });
-      setPatientName(dirEntry ? dirEntry.name : "");
-    }
-    // Also save to local drafts. Use `pid` (the actual loaded ID) not `form.patientId`
-    // which is still the stale pre-setForm value due to React's async state updates.
+    // Also save to local drafts
     var updated = Object.assign({}, drafts);
-    updated[pid] = draftData;
+    updated[form.patientId] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
-    flash("Loaded " + pid);
+    // Auto-fill name from directory
+    var dirEntry = directory.find(function(e) { return e.id === form.patientId; });
+    if (dirEntry) setPatientName(dirEntry.name);
+    flash("Loaded " + form.patientId);
   }
 
   function getDraftList() { return Object.keys(drafts); }
@@ -1214,10 +1208,10 @@ function App() {
           try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
           var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
           flash((matched ? matched.label : photoType) + " captured");
-          // Auto-parse insurance card front (where the member ID lives) and device sticker
-          if (photoType === "insurance_primary_front") {
+          // Auto-parse Medicare card and device sticker
+          if (photoType === "medicare") {
             parseMedicareCard(compressed, false);
-          } else if (photoType === "insurance_secondary_front") {
+          } else if (photoType === "medicare_secondary") {
             parseMedicareCard(compressed, true);
           } else if (photoType === "serial") {
             parseDeviceSticker(compressed, "device");
@@ -1232,77 +1226,6 @@ function App() {
       reader.readAsDataURL(file);
     };
     input.click();
-  }
-
-  // Clipboard-paste variant of capturePhoto — reads the clipboard via navigator.clipboard.read()
-  // and stores the image under the given photoType. Used for pasting insurance card images
-  // from Spruce/screenshots on desktop.
-  async function pasteClipboardPhoto(photoType) {
-    var pid = photoPatientId || form.patientId;
-    if (!pid) { flash("Enter a Patient ID first", "err"); return; }
-    if (!navigator.clipboard || !navigator.clipboard.read) {
-      flash("Clipboard paste not supported in this browser — use Capture instead", "err");
-      return;
-    }
-    try {
-      var items = await navigator.clipboard.read();
-      var blob = null;
-      for (var i = 0; i < items.length; i++) {
-        var item = items[i];
-        for (var t = 0; t < item.types.length; t++) {
-          if (item.types[t].indexOf("image/") === 0) {
-            blob = await item.getType(item.types[t]);
-            break;
-          }
-        }
-        if (blob) break;
-      }
-      if (!blob) { flash("No image on clipboard", "err"); return; }
-      var reader = new FileReader();
-      reader.onload = function(ev) {
-        var img = new Image();
-        img.onload = function() {
-          var canvas = document.createElement("canvas");
-          var maxDim = 1200; var w = img.width; var h = img.height;
-          if (w > maxDim || h > maxDim) { if (w > h) { h = h*maxDim/w; w = maxDim; } else { w = w*maxDim/h; h = maxDim; } }
-          canvas.width = w; canvas.height = h;
-          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-          var compressed = canvas.toDataURL("image/jpeg", 0.7);
-          var newPhoto = { id: Date.now(), patientId: pid, type: photoType, timestamp: new Date().toISOString(), data: compressed };
-          var filtered = photos.filter(function(p){ return !(p.patientId === pid && p.type === photoType); });
-          var updated = filtered.concat([newPhoto]);
-          setPhotos(updated);
-          try { storage.set(PHOTOS_KEY, JSON.stringify(updated)); } catch(e) { flash("Storage full", "warn"); }
-          var matched = PHOTO_TYPES.find(function(t){return t.key===photoType});
-          flash((matched ? matched.label : photoType) + " pasted");
-          if (photoType === "insurance_primary_front") parseMedicareCard(compressed, false);
-          else if (photoType === "insurance_secondary_front") parseMedicareCard(compressed, true);
-        };
-        img.src = ev.target.result;
-      };
-      reader.readAsDataURL(blob);
-    } catch(e) {
-      flash("Clipboard read failed: " + e.toString(), "err");
-    }
-  }
-
-  // Manually fire the Twilio SMS asking for insurance card photos. Button on the intake form.
-  async function requestInsuranceCards() {
-    if (!form.phone) { flash("Patient phone required", "err"); return; }
-    if (!sheetUrl) { flash("No script URL", "err"); return; }
-    try {
-      var resp = await fetch(sheetUrl, {
-        method: "POST",
-        body: JSON.stringify({
-          _action: "sendInsuranceRequest",
-          phone: form.phone,
-          patientName: patientName || ""
-        })
-      });
-      var j = await resp.json();
-      if (j.status === "ok") flash(j.message || "SMS sent");
-      else flash("SMS failed: " + (j.message || "unknown"), "err");
-    } catch(e) { flash("SMS error: " + e.toString(), "err"); }
   }
 
   function getSigCoords(e, canvas) {
@@ -1608,7 +1531,7 @@ function App() {
     var sexWord = form.sex === "M" ? "male" : form.sex === "F" ? "female" : "patient";
     var pmhxList = form.pmhx.length ? form.pmhx.join(", ") : "None";
     return "Patient Name: " + (patientName || "[Name]") + "\n" +
-"DOB: " + (form.dob || "[DOB]") + "\n" +
+"DOB: [DOB]\n" +
 "Visit Date: " + form.date + "\n" +
 "Provider: Dr. Lindsey A. Nelson\n" +
 "Referring Physician: " + (form.referringProvider || "[Provider]") + "\n\n" +
@@ -2017,26 +1940,18 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       updated[form.patientId] = draftData;
       setDrafts(updated);
       storage.set(DRAFTS_KEY, JSON.stringify(updated));
-      var saveDraftPayload = withUserContext(Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName }));
+      var saveDraftPayload = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(saveDraftPayload) });
 
       // Then generate the preauth packet
-      // Include any captured insurance card photos so the biller gets a standalone Insurance Cards doc
-      var pid = form.patientId;
-      var insurancePhotos = photos.filter(function(p) {
-        return p.patientId === pid && p.type && p.type.indexOf("insurance_") === 0;
-      }).map(function(p) {
-        return { type: p.type, data: p.data };
-      });
-      var payload = withUserContext({
+      var payload = {
         _action: "generatePreauth",
         patientId: form.patientId,
         patientName: patientName,
         date: form.date,
         hnpText: generateHnP(),
-        lomnText: generateLOMN(),
-        insuranceCardPhotos: insurancePhotos
-      });
+        lomnText: generateLOMN()
+      };
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
       flash("Draft saved + preauth packet sent to biller", "ok");
     } catch(e) {
@@ -2061,13 +1976,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     // Insurance
     if (!form.insuranceName) errors.push("REJECTION RISK: Primary insurance name missing");
     if (!form.memberId) errors.push("REJECTION RISK: Insurance member ID missing");
-
-    // Insurance card photos — biller requires these in the preauth packet
-    var pid = form.patientId;
-    var hasInsurancePhotos = pid && photos.some(function(p) {
-      return p.patientId === pid && p.type && p.type.indexOf("insurance_") === 0;
-    });
-    if (!hasInsurancePhotos) errors.push("REJECTION RISK: Insurance card photos not captured (biller requires front/back of card in preauth packet)");
 
     // Billing codes
     if (!form.dxCodes || !form.dxCodes.length) {
@@ -2189,7 +2097,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     // Also sync the draft to cloud so other devices can load it
     if (sheetUrl) {
       try {
-        var draftSync = withUserContext(Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName }));
+        var draftSync = Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName });
         fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(draftSync) });
       } catch(e) {}
     }
@@ -2221,7 +2129,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           submitData._noteText = generateNote();
         }
         // Use real cors so we can verify the response and only clear photos on confirmed success
-        submitData = withUserContext(submitData);
         var resp = await fetch(sheetUrl, {method:"POST", body:JSON.stringify(submitData)});
         var result = await resp.json();
         if (result.status === "ok") {
@@ -2355,18 +2262,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   return (
     <div className="max-w-lg mx-auto bg-white min-h-screen">
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
-        {(function() {
-          var tabs = [["referrals","Referrals"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]];
-          if (userProfile && String(userProfile.role).toLowerCase() === "physician") {
-            tabs.push(["cosign","Cosign" + (cosignQueue.length ? " (" + cosignQueue.length + ")" : "")]);
-          }
-          return tabs.map(function(item) {
-            var v = item[0], l = item[1];
-            return <button key={v} onClick={function(){setView(v)}} className={"flex-1 min-w-0 px-1 py-2.5 text-xs font-medium truncate " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
-          });
-        })()}
-        <button onClick={function(){setShowSettings(true)}} className="px-1.5 py-2.5 text-gray-400 text-sm" title="Profile settings">⚙</button>
-        <button onClick={function(){setShowConfig(!showConfig)}} className="px-1.5 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
+        {[["referrals","Referrals"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
+          var v = item[0], l = item[1];
+          return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
+        })}
+        <button onClick={function(){setShowConfig(!showConfig)}} className="px-3 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
       </div>
 
       {showConfig && (
@@ -2478,29 +2378,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                             {(p.insuranceSecondary || p.memberIdSecondary) && (
                               <div className="text-xs text-gray-500">Sec: {p.insuranceSecondary || ""}{p.memberIdSecondary ? " #" + p.memberIdSecondary : ""}</div>
                             )}
-                            {(p.referringClinicName || p.referringClinicCity) && (
-                              <div className="text-xs text-gray-400">Clinic: {p.referringClinicName || ""}{p.referringClinicCity ? ", " + p.referringClinicCity : ""}{p.referringClinicState ? " " + p.referringClinicState : ""}</div>
-                            )}
-                            {item.confidence && (function() {
-                              var suspects = [];
-                              for (var cf in item.confidence) {
-                                if (item.confidence[cf] === "suspect_disagreement" || item.confidence[cf] === "suspect_single_pass" || item.confidence[cf] === "format_error") {
-                                  var detail = "";
-                                  if (item.disagreements) {
-                                    var d = item.disagreements.find(function(x){return x.field === cf;});
-                                    if (d) detail = " (" + d.pass1 + " vs " + d.pass2 + ")";
-                                  }
-                                  suspects.push(cf + detail);
-                                }
-                              }
-                              if (!suspects.length) return null;
-                              return (
-                                <div className="mt-1 bg-yellow-100 border border-yellow-300 rounded p-1.5">
-                                  <div className="text-xs font-semibold text-yellow-800 mb-0.5">⚠ Verify — passes disagreed:</div>
-                                  {suspects.map(function(s, si) { return <div key={"s"+si} className="text-xs text-yellow-800">{s}</div>; })}
-                                </div>
-                              );
-                            })()}
                             {formatWarnings.length > 0 && (
                               <div className="mt-1 bg-yellow-100 border border-yellow-300 rounded p-1.5">
                                 <div className="text-xs font-semibold text-yellow-800 mb-0.5">⚠ Verify before adding:</div>
@@ -2649,10 +2526,29 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     );
                   })()}
                   {ref.dncId && <div className="text-xs text-blue-500">ID: {ref.dncId}</div>}
+                {/* Call tally: only shown when attempts > 0. Gives MA a quick
+                    read on whether this referral has been pursued already
+                    without opening the card. Format: "📞 3 attempts · last 4/20 2:45pm"
+                    lastCallAt is ISO from backend; shortened client-side for display. */}
+                {(parseInt(ref.callAttempts, 10) || 0) > 0 && (function(){
+                  var n = parseInt(ref.callAttempts, 10);
+                  var lastShort = "";
+                  if (ref.lastCallAt) {
+                    try {
+                      var d = new Date(ref.lastCallAt);
+                      lastShort = (d.getMonth()+1)+"/"+d.getDate()+" "+((d.getHours()%12)||12)+":"+(d.getMinutes()<10?"0":"")+d.getMinutes()+(d.getHours()>=12?"pm":"am");
+                    } catch(e){}
+                  }
+                  return (
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      📞 {n} {n === 1 ? "attempt" : "attempts"}{lastShort ? " · last " + lastShort : ""}
+                    </div>
+                  );
+                })()}
                 <div className="flex gap-2 pt-1">
                   {!ref.dncId && (
-                    <button onClick={function(){startIntakeFromReferral(ref)}}
-                      className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs font-medium">Start Intake</button>
+                    <button onClick={function(){openCallModal(ref)}}
+                      className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs font-medium">Call Patient</button>
                   )}
                   {ref.dncId && !ref.called && (
                     <button onClick={function(){updateReferralStatus(ref.rowIndex, "called", new Date().toISOString()); flash("Marked as called");}}
@@ -2670,36 +2566,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     }
                   }} className="px-2 py-1.5 bg-red-50 text-red-500 rounded text-xs font-medium">×</button>
                 </div>
-                {ref.dncId && (
-                  <div className="flex gap-1 pt-1 border-t border-gray-100 mt-1">
-                    <span className="text-xs text-gray-400 py-1 mr-1">Billing:</span>
-                    {!ref.medicareSubmitted ? (
-                      <button onClick={function(){updateReferralStatus(ref.rowIndex, "medicareSubmitted", new Date().toISOString()); flash("Marked submitted to Medicare");}}
-                        className="py-1 px-2 bg-purple-50 text-purple-700 rounded text-xs font-medium">Mark Submitted</button>
-                    ) : !ref.reimbursement ? (
-                      <React.Fragment>
-                        <span className="text-xs text-purple-600 py-1">Submitted ✓</span>
-                        <button onClick={function(){
-                          var amt = prompt("Reimbursement amount (e.g. $4500):");
-                          if (amt && amt.trim()) {
-                            updateReferralStatus(ref.rowIndex, "reimbursement", amt.trim());
-                            updateReferralStatus(ref.rowIndex, "status", "Complete");
-                            flash("Marked reimbursed: " + amt.trim());
-                          }
-                        }} className="py-1 px-2 bg-green-50 text-green-700 rounded text-xs font-medium">Reimbursed</button>
-                        <button onClick={function(){
-                          var reason = prompt("Denial reason:");
-                          if (reason && reason.trim()) {
-                            updateReferralStatus(ref.rowIndex, "status", "Denied: " + reason.trim());
-                            flash("Marked denied");
-                          }
-                        }} className="py-1 px-2 bg-red-50 text-red-600 rounded text-xs font-medium">Denied</button>
-                      </React.Fragment>
-                    ) : (
-                      <span className="text-xs text-green-600 py-1">Reimbursed: {ref.reimbursement} ✓</span>
-                    )}
-                  </div>
-                )}
               </div>
             );
           });
@@ -2874,6 +2740,51 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               <div><label className={lc}>Visit</label><select className={ic} value={form.visitType} onChange={function(e){set("visitType",e.target.value)}}><option>Phone Intake</option><option>D0</option><option>D20</option><option>D90</option></select></div>
               <div><label className={lc}>Date</label><input type="date" className={ic} value={form.date} onChange={function(e){set("date",e.target.value)}} /></div>
             </div>
+
+            {/* Inline name search: type 2+ chars, get dropdown of matches from
+                user's sites. Pick one → auto-fills Study ID, loads draft. Useful
+                when staff know the patient by name but don't remember the DNC ID.
+                Debounced 300ms via useEffect watching nameSearchQuery. */}
+            <div className="relative">
+              <label className={lc}>Find by name</label>
+              <input className={ic} value={nameSearchQuery} placeholder="Type 2+ letters of patient name..."
+                onChange={function(e){setNameSearchQuery(e.target.value); setNameSearchOpen(true)}}
+                onFocus={function(){setNameSearchOpen(true)}}
+                onBlur={function(){setTimeout(function(){setNameSearchOpen(false)}, 200)}} />
+              {nameSearchOpen && nameSearchQuery && nameSearchQuery.length >= 2 && (
+                <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-gray-300 rounded shadow-lg z-10 max-h-64 overflow-y-auto">
+                  {nameSearchResults.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-gray-400">No matches</div>
+                  ) : (
+                    nameSearchResults.map(function(r, i) {
+                      return (
+                        <button key={i} onMouseDown={function(e){e.preventDefault()}} onClick={function(){
+                          if (r.dncId) {
+                            set("patientId", r.dncId);
+                            setPatientName(r.name || "");
+                            loadDraft(r.dncId);
+                          } else {
+                            // Referral exists but no DNC ID yet — user should go
+                            // through call-patient flow on Referrals tab instead
+                            flash(r.name + " has no DNC ID yet — use Referrals tab");
+                          }
+                          setNameSearchQuery("");
+                          setNameSearchResults([]);
+                          setNameSearchOpen(false);
+                        }} className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-100">
+                          <div className="text-sm text-gray-800">{r.name}</div>
+                          <div className="text-xs text-gray-500">
+                            {r.dncId ? r.dncId : <span className="text-orange-500">no DNC ID</span>}
+                            {r.status ? " · " + r.status : ""}
+                            {r.siteId ? " · " + r.siteId : ""}
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Saved drafts indicator */}
@@ -2949,25 +2860,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <div className="text-xs font-semibold text-gray-500">INSURANCE</div>
                       {(function(){
                         var pid = form.patientId;
-                        function has(t) { return pid && photos.some(function(p){return p.patientId===pid && p.type===t}); }
-                        function slot(label, key) {
-                          var present = has(key);
-                          return (
-                            <div key={key} className="flex items-center gap-1">
-                              <span className="text-xs text-gray-600 w-16">{label}</span>
-                              <button onClick={function(){capturePhoto(key)}} className={"px-1.5 py-0.5 text-xs rounded " + (present ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")} title="Capture/Upload">📷</button>
-                              <button onClick={function(){pasteClipboardPhoto(key)}} className="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600" title="Paste from clipboard">📋</button>
-                              {present && <span className="text-xs text-green-600">✓</span>}
-                            </div>
-                          );
-                        }
+                        var hasPrimary = pid && photos.some(function(p){return p.patientId===pid && p.type==="medicare"});
+                        var hasSecondary = pid && photos.some(function(p){return p.patientId===pid && p.type==="medicare_secondary"});
                         return (
-                          <div className="flex flex-col gap-1">
-                            {slot("1° Front", "insurance_primary_front")}
-                            {slot("1° Back", "insurance_primary_back")}
-                            {slot("2° Front", "insurance_secondary_front")}
-                            {slot("2° Back", "insurance_secondary_back")}
-                            <button onClick={requestInsuranceCards} className="mt-1 px-2 py-1 text-xs rounded bg-purple-100 text-purple-700 font-medium" title="Send SMS to patient requesting insurance card photos">📱 Text patient for cards</button>
+                          <div className="flex gap-1">
+                            <button onClick={function(){capturePhoto("medicare")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasPrimary ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                              {hasPrimary ? "✓ Primary" : "📷 Primary"}
+                            </button>
+                            <button onClick={function(){capturePhoto("medicare_secondary")}} className={"px-2 py-1 text-xs rounded font-medium whitespace-nowrap " + (hasSecondary ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600")}>
+                              {hasSecondary ? "✓ Secondary" : "📷 Secondary"}
+                            </button>
                           </div>
                         );
                       })()}
@@ -3289,114 +3191,180 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           )}
 
           {/* ---- SENSORY ASSESSMENT SECTION ---- */}
+          {/* Layout mirrors the real clinical workflow so MAs/CRNAs can use the form
+              as a step-by-step guide rather than hunting for fields. Flow:
+                PRE  → 1. Walk (shoes on) 2. SLS (shoes on) 3. Monofilament (shoes off)
+                       4. Stereognosis 5. HRV + Pain (baseline before activation)
+                DEVICE PLACEMENT (in Intake section for D0, Explant for D20)
+                POST → 6. HRV + Pain (immediately after activation)
+                       7. Stereognosis 8. Monofilament 9. SLS (shoes on) 10. Walk
+              D90 = single exam, Pre flow only (no device in place). */}
           {formSection === "sensory" && (function() {
-            var phases = form.visitType === "D90" ? ["Pre"] : ["Pre","Post"];
-            var phaseLabel = function(ph) { return form.visitType === "D90" ? "EXAM" : ph.toUpperCase(); };
+            var isD90 = form.visitType === "D90";
+            // Per-step header. Numbered badge + title, optional sub-label (shoe state, hand).
+            function StepHeader(props) {
+              return (
+                <div className="flex items-baseline gap-2 mb-2">
+                  <div className="bg-gray-700 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center flex-shrink-0">{props.num}</div>
+                  <div className="text-sm font-semibold text-gray-800">{props.title}</div>
+                  {props.sub && <div className="text-xs text-gray-500">{props.sub}</div>}
+                </div>
+              );
+            }
+            // Per-phase banner (PRE / POST / EXAM)
+            function PhaseBanner(props) {
+              var colors = props.phase === "post" ? "bg-purple-100 text-purple-900 border-purple-300"
+                : props.phase === "pre" ? "bg-blue-100 text-blue-900 border-blue-300"
+                : "bg-gray-200 text-gray-800 border-gray-300";
+              return <div className={"rounded px-3 py-2 font-bold text-sm tracking-wide border " + colors}>{props.children}</div>;
+            }
+            // One monofilament foot grid (re-used for L and R, pre and post)
+            function FootGrid(props) {
+              var key = props.side + "Foot" + props.phase;
+              return (
+                <div>
+                  <div className="text-xs text-gray-500 mb-1">{props.label}: <span className="font-bold text-blue-600">{sumChecked(form[key])}/12</span></div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {siteLabels.map(function(label, i) {
+                      return <button key={i} onClick={function(){toggleSite(key,i)}}
+                        className={"text-xs py-1 px-0.5 rounded border " + (form[key][i] ? "bg-blue-500 text-white border-blue-500" : "bg-white text-gray-500 border-gray-300")}>{label}</button>;
+                    })}
+                  </div>
+                </div>
+              );
+            }
+            // SLS: side-by-side R/L, each with its own stopwatch, time input, fall Y/N
+            function SlsBlock(props) {
+              return (
+                <div className="grid grid-cols-2 gap-3">
+                  {["Right","Left"].map(function(side) {
+                    var secKey = "sls" + side + "Sec" + props.phase;
+                    var fallKey = "sls" + side + "Fall" + props.phase;
+                    return (
+                      <div key={side} className="bg-white rounded p-2 border border-gray-200">
+                        <div className="text-xs font-semibold text-gray-600 mb-1">{side} leg</div>
+                        <Stopwatch />
+                        <div className="grid grid-cols-2 gap-1 mt-1">
+                          <input className={ic} type="number" step="0.1" value={form[secKey]} onChange={function(e){set(secKey,e.target.value)}} placeholder="sec" />
+                          <select className={ic} value={form[fallKey]} onChange={function(e){set(fallKey,e.target.value)}}>
+                            <option value="No">No fall</option>
+                            <option value="Yes">Fell</option>
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            }
+            // 10m walk block: one stopwatch, one time input
+            function WalkBlock(props) {
+              var key = "walkTime" + props.phase;
+              return (
+                <div className="grid grid-cols-2 gap-2 items-start">
+                  <Stopwatch />
+                  <input className={ic} type="number" step="0.1" value={form[key]} onChange={function(e){set(key,e.target.value)}} placeholder="time (sec)" />
+                </div>
+              );
+            }
+            // Stereognosis block: Q / D / P selects
+            function StereoBlock(props) {
+              return (
+                <div className="grid grid-cols-3 gap-2">
+                  <div><label className={lc}>Quarter</label><select className={ic} value={form["coinQuarter"+props.phase]} onChange={function(e){set("coinQuarter"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
+                  <div><label className={lc}>Dime</label><select className={ic} value={form["coinDime"+props.phase]} onChange={function(e){set("coinDime"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
+                  <div><label className={lc}>Penny</label><select className={ic} value={form["coinPenny"+props.phase]} onChange={function(e){set("coinPenny"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
+                </div>
+              );
+            }
+            // HRV + Pain block: RMSSD and NRS inputs
+            function HrvBlock(props) {
+              return (
+                <div className="grid grid-cols-2 gap-2">
+                  <div><label className={lc}>RMSSD (ms)</label><input className={ic} type="number" step="0.1" value={form["rmssd"+props.phase]} onChange={function(e){set("rmssd"+props.phase,e.target.value)}} placeholder="ms" /></div>
+                  <div><label className={lc}>NRS Pain</label><input className={ic} type="number" min="0" max="10" value={form["nrsPain"+props.phase]} onChange={function(e){set("nrsPain"+props.phase,e.target.value)}} placeholder="/10" /></div>
+                </div>
+              );
+            }
+            // Single step card wrapper
+            function StepCard(props) {
+              return (
+                <div className="bg-gray-50 rounded p-3">
+                  <StepHeader num={props.num} title={props.title} sub={props.sub} />
+                  {props.children}
+                </div>
+              );
+            }
+
             return (
             <div className="space-y-3">
-              {form.visitType === "D90" && <div className="text-xs text-center text-gray-400 bg-gray-50 py-2 rounded">Single exam (no device in place)</div>}
+              {isD90 && (
+                <div className="text-xs text-center text-gray-500 bg-gray-50 py-2 rounded">Single exam (no device in place)</div>
+              )}
 
-              <div className="bg-gray-50 rounded p-3">
-                <div className="text-xs font-semibold text-gray-500 mb-2">HRV and PAIN</div>
-                <div className={"grid gap-4 " + (phases.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
-                  {phases.map(function(ph) { return (
-                    <div key={ph}>
-                      <div className="text-xs text-gray-400 mb-1">{phaseLabel(ph)}</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div><label className={lc}>RMSSD</label><input className={ic} type="number" step="0.1" value={form["rmssd"+ph]} onChange={function(e){set("rmssd"+ph,e.target.value)}} placeholder="ms" /></div>
-                        <div><label className={lc}>NRS Pain</label><input className={ic} type="number" min="0" max="10" value={form["nrsPain"+ph]} onChange={function(e){set("nrsPain"+ph,e.target.value)}} placeholder="/10" /></div>
-                      </div>
+              {/* ━━━ PRE (or EXAM for D90) ━━━ */}
+              <PhaseBanner phase={isD90 ? "exam" : "pre"}>
+                {isD90 ? "EXAM" : "PRE-ACTIVATION"}
+              </PhaseBanner>
+
+              <StepCard num="1" title="10m Walk" sub="shoes on">
+                <WalkBlock phase="Pre" />
+              </StepCard>
+
+              <StepCard num="2" title="Single Leg Stance" sub="shoes on · eyes closed · max 45s">
+                <SlsBlock phase="Pre" />
+              </StepCard>
+
+              <StepCard num="3" title="Monofilament" sub="shoes off · L then R">
+                <div className="grid grid-cols-2 gap-3">
+                  <FootGrid side="left" label="L foot" phase="Pre" />
+                  <FootGrid side="right" label="R foot" phase="Pre" />
+                </div>
+                <div className="text-xs text-gray-500 mt-2">Combined: <span className="font-bold text-blue-600">{sumChecked(form.leftFootPre) + sumChecked(form.rightFootPre)}/24</span></div>
+              </StepCard>
+
+              <StepCard num="4" title="Stereognosis" sub="0–3 correct">
+                <StereoBlock phase="Pre" />
+              </StepCard>
+
+              <StepCard num="5" title="HRV & Pain" sub={isD90 ? "" : "baseline before activation"}>
+                <HrvBlock phase="Pre" />
+              </StepCard>
+
+              {/* ━━━ POST (D0 and D20 only) ━━━ */}
+              {!isD90 && (
+                <React.Fragment>
+                  <div className="text-xs text-center text-gray-400 italic py-2">— device placement / explant happens between Pre and Post —</div>
+
+                  <PhaseBanner phase="post">POST-ACTIVATION</PhaseBanner>
+
+                  <StepCard num="6" title="HRV & Pain" sub="immediately after activation — captures acute vagal response">
+                    <HrvBlock phase="Post" />
+                  </StepCard>
+
+                  <StepCard num="7" title="Stereognosis" sub="0–3 correct">
+                    <StereoBlock phase="Post" />
+                  </StepCard>
+
+                  <StepCard num="8" title="Monofilament" sub="shoes still off">
+                    <div className="grid grid-cols-2 gap-3">
+                      <FootGrid side="left" label="L foot" phase="Post" />
+                      <FootGrid side="right" label="R foot" phase="Post" />
                     </div>
-                  );})}
-                </div>
-              </div>
+                    <div className="text-xs text-gray-500 mt-2">Combined: <span className="font-bold text-blue-600">{sumChecked(form.leftFootPost) + sumChecked(form.rightFootPost)}/24</span></div>
+                  </StepCard>
 
-              {phases.map(function(phase) { return (
-                <div key={phase} className="bg-gray-50 rounded p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-semibold text-gray-500">MONOFILAMENT {phaseLabel(phase)}</span>
-                    <span className="text-sm font-bold text-blue-600">L: {sumChecked(form["leftFoot"+phase])}/12 | R: {sumChecked(form["rightFoot"+phase])}/12</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    {["left","right"].map(function(side) { return (
-                      <div key={side}>
-                        <div className="text-xs text-gray-400 mb-1 capitalize">{side}</div>
-                        <div className="grid grid-cols-3 gap-1">
-                          {siteLabels.map(function(label, i) {
-                            var key = side+"Foot"+phase;
-                            return <button key={i} onClick={function(){toggleSite(key,i)}}
-                              className={"text-xs py-1 px-0.5 rounded border " + (form[key][i] ? "bg-blue-500 text-white border-blue-500" : "bg-white text-gray-500 border-gray-300")}>{label}</button>;
-                          })}
-                        </div>
-                      </div>
-                    );})}
-                  </div>
-                </div>
-              );})}
+                  <StepCard num="9" title="Single Leg Stance" sub="shoes back on · eyes closed · max 45s">
+                    <SlsBlock phase="Post" />
+                  </StepCard>
 
-              <div className="bg-gray-50 rounded p-3">
-                <div className="text-xs font-semibold text-gray-500 mb-2">STEREOGNOSIS (0-3 per hand)</div>
-                <div className={"grid gap-4 " + (phases.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
-                  {phases.map(function(ph) { return (
-                    <div key={ph}>
-                      <div className="text-xs text-gray-400 mb-1">{phaseLabel(ph)}</div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <div><label className={lc}>Quarter</label><select className={ic} value={form["coinQuarter"+ph]} onChange={function(e){set("coinQuarter"+ph,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
-                        <div><label className={lc}>Dime</label><select className={ic} value={form["coinDime"+ph]} onChange={function(e){set("coinDime"+ph,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
-                        <div><label className={lc}>Penny</label><select className={ic} value={form["coinPenny"+ph]} onChange={function(e){set("coinPenny"+ph,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
-                      </div>
-                    </div>
-                  );})}
-                </div>
-              </div>
+                  <StepCard num="10" title="10m Walk" sub="shoes on">
+                    <WalkBlock phase="Post" />
+                  </StepCard>
+                </React.Fragment>
+              )}
 
-              <div className="bg-blue-50 rounded p-3 border border-blue-200">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs font-semibold text-blue-700">STOPWATCH</div>
-                  <div className="text-xs text-blue-500">{swFormat(swElapsed)}s</div>
-                </div>
-                <div className="flex gap-2">
-                  {!swRunning && swElapsed === 0 && (
-                    <button onClick={swStart} className="flex-1 py-2 bg-green-600 text-white rounded text-sm font-medium">Start</button>
-                  )}
-                  {!swRunning && swElapsed > 0 && (
-                    <React.Fragment>
-                      <button onClick={swStart} className="flex-1 py-2 bg-green-600 text-white rounded text-sm font-medium">Resume</button>
-                      <button onClick={swReset} className="flex-1 py-2 bg-gray-200 text-gray-700 rounded text-sm font-medium">Reset</button>
-                    </React.Fragment>
-                  )}
-                  {swRunning && (
-                    <React.Fragment>
-                      <button onClick={swStop} className="flex-1 py-2 bg-red-600 text-white rounded text-sm font-medium">Stop</button>
-                      <button onClick={swReset} className="flex-1 py-2 bg-gray-200 text-gray-700 rounded text-sm font-medium">Reset</button>
-                    </React.Fragment>
-                  )}
-                </div>
-                <div className="text-xs text-blue-400 mt-1">Use for Single Leg Stance (max 45s) and 10m walk. Tap Stop, read the seconds, type into the field.</div>
-              </div>
-
-              <div className="bg-gray-50 rounded p-3">
-                <div className="text-xs font-semibold text-gray-500 mb-2">SINGLE LEG STANCE (eyes closed, max 45s) and 10M WALK</div>
-                <div className={"grid gap-4 " + (phases.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
-                  {phases.map(function(ph) { return (
-                    <div key={ph}>
-                      <div className="text-xs text-gray-400 mb-1">{phaseLabel(ph)}</div>
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div><label className={lc}>R leg (s)</label><input className={ic} type="number" step="0.1" value={form["slsRightSec"+ph]} onChange={function(e){set("slsRightSec"+ph,e.target.value)}} /></div>
-                          <div><label className={lc}>R fall?</label><select className={ic} value={form["slsRightFall"+ph]} onChange={function(e){set("slsRightFall"+ph,e.target.value)}}><option>No</option><option>Yes</option></select></div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div><label className={lc}>L leg (s)</label><input className={ic} type="number" step="0.1" value={form["slsLeftSec"+ph]} onChange={function(e){set("slsLeftSec"+ph,e.target.value)}} /></div>
-                          <div><label className={lc}>L fall?</label><select className={ic} value={form["slsLeftFall"+ph]} onChange={function(e){set("slsLeftFall"+ph,e.target.value)}}><option>No</option><option>Yes</option></select></div>
-                        </div>
-                        <div><label className={lc}>10m walk (s)</label><input className={ic} type="number" step="0.1" value={form["walkTime"+ph]} onChange={function(e){set("walkTime"+ph,e.target.value)}} /></div>
-                      </div>
-                    </div>
-                  );})}
-                </div>
-              </div>
-
+              {/* Notes + Submit */}
               <div><label className={lc}>Notes</label><textarea className={ic + " h-14"} value={form.notes} onChange={function(e){set("notes",e.target.value)}} placeholder="Meds, observations..."></textarea></div>
 
               <button onClick={trySubmit} disabled={submitting}
@@ -3622,6 +3590,67 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         </div>
       )}
 
+      {/* ========== CALL OUTCOME MODAL ==========
+          Opened when user taps "Call Patient" on a referral card. Decouples "tried
+          to call" from "reached and doing intake now" so the card's visual state
+          doesn't falsely advance when nobody picks up. Two paths:
+          - Reached → closes modal, jumps to startIntakeFromReferral (existing flow)
+          - Any other outcome → logs attempt, card stays "Referral Received" */}
+      {callModalRef && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(e){if(e.target===e.currentTarget){setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason("");}}}>
+          <div className="bg-white rounded-lg p-4 max-w-md w-full" onClick={function(e){e.stopPropagation()}}>
+            <div className="text-sm font-semibold text-gray-800 mb-1">Call {callModalRef.name || "patient"}</div>
+            {callModalRef.phone && <div className="text-xs text-gray-500 mb-3">{callModalRef.phone}</div>}
+            {(parseInt(callModalRef.callAttempts, 10) || 0) > 0 && (
+              <div className="text-xs text-gray-500 bg-gray-50 rounded p-2 mb-3">
+                📞 {callModalRef.callAttempts} prior {(parseInt(callModalRef.callAttempts,10)||0) === 1 ? "attempt" : "attempts"}
+                {callModalRef.callLog && (
+                  <pre className="text-xs text-gray-400 mt-1 whitespace-pre-wrap font-sans">{callModalRef.callLog}</pre>
+                )}
+              </div>
+            )}
+
+            <div className="text-xs font-semibold text-gray-700 mb-2">Did patient answer?</div>
+
+            <div className="space-y-2 mb-3">
+              <button onClick={function(){
+                var ref = callModalRef;
+                setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason("");
+                startIntakeFromReferral(ref);
+              }} className="w-full py-2 bg-green-600 text-white rounded text-sm font-medium">
+                Yes — start intake now
+              </button>
+            </div>
+
+            <div className="text-xs text-gray-500 mb-1">If no, what happened?</div>
+            <select className={ic + " mb-2"} value={callOutcome} onChange={function(e){setCallOutcome(e.target.value)}}>
+              <option value="">-- select outcome --</option>
+              <option value="no_answer">No answer</option>
+              <option value="voicemail_full">Voicemail full</option>
+              <option value="left_vm">Left voicemail</option>
+              <option value="wrong_number">Wrong number</option>
+              <option value="patient_hung_up">Patient hung up</option>
+              <option value="other">Other</option>
+            </select>
+
+            {callOutcome === "other" && (
+              <input className={ic + " mb-2"} placeholder="describe what happened..."
+                value={callOutcomeReason} onChange={function(e){setCallOutcomeReason(e.target.value)}} />
+            )}
+
+            <div className="flex gap-2 mt-2">
+              <button onClick={function(){setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason("")}}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 text-sm rounded font-medium">Cancel</button>
+              <button onClick={submitCallAttempt}
+                disabled={!callOutcome || callSubmitting || (callOutcome === "other" && !callOutcomeReason.trim())}
+                className={"flex-1 py-2 text-white text-sm rounded font-medium " + ((!callOutcome || callSubmitting || (callOutcome === "other" && !callOutcomeReason.trim())) ? "bg-gray-400" : "bg-blue-600")}>
+                {callSubmitting ? "Logging..." : "Log attempt"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ========== GLOBAL VALIDATION ERROR MODAL (visible from any tab) ========== */}
       {showOverride && validationErrors.length > 0 && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(){setShowOverride(false)}}>
@@ -3638,64 +3667,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             </div>
           </div>
         </div>
-      )}
-
-      {view === "cosign" && (
-        <div className="p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-base font-semibold">Pending Cosignatures</h2>
-            <button onClick={refreshCosignQueue} className="text-xs text-blue-600 underline">Refresh</button>
-          </div>
-          {cosignQueue.length === 0 && <div className="text-sm text-gray-500">Nothing pending.</div>}
-          {cosignQueue.map(function(item) {
-            return (
-              <div key={item.cosignId} className="border border-gray-200 rounded p-3 mb-2">
-                <div className="text-sm font-medium">{item.docType}</div>
-                <div className="text-xs text-gray-600">Patient: {item.patientId}</div>
-                <div className="text-xs text-gray-600">Author: {item.authorEmail} ({item.authorRole})</div>
-                <div className="text-xs text-gray-500">{item.createdAt ? new Date(item.createdAt).toLocaleString() : ""}</div>
-                {item.notes && <div className="text-xs text-orange-600 mt-1">{item.notes}</div>}
-                <div className="flex gap-2 mt-2">
-                  <a href={item.docUrl} target="_blank" rel="noreferrer" className="flex-1 py-1.5 text-center border border-gray-300 rounded text-xs">Review</a>
-                  <button
-                    onClick={function() {
-                      if (!confirm("Cosign " + item.docType + " for " + item.patientId + "? Your saved signature will be appended to the document.")) return;
-                      fetch(sheetUrl, {
-                        method: "POST",
-                        body: JSON.stringify({
-                          _action: "signCosign",
-                          cosignId: item.cosignId
-                        })
-                      }).then(function(r){return r.json()}).then(function(j) {
-                        if (j && j.status === "ok") {
-                          flash("Cosigned");
-                          setCosignQueue(function(prev){return prev.filter(function(c){return c.cosignId !== item.cosignId})});
-                        } else {
-                          flash("Cosign failed: " + (j && j.message || "unknown"), "err");
-                        }
-                      }).catch(function(e){ flash("Cosign error: " + e, "err"); });
-                    }}
-                    className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs">
-                    Sign
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ========== SETTINGS / PROFILE MODAL ========== */}
-      {showSettings && (
-        <SettingsModal
-          sheetUrl={sheetUrl}
-          email={window.__currentUser ? window.__currentUser.email : ""}
-          profile={userProfile}
-          sitesList={sitesList}
-          onClose={function(){ setShowSettings(false); }}
-          onSaved={function(p){ setUserProfile(p); setShowSettings(false); flash("Profile saved"); }}
-          flash={flash}
-        />
       )}
 
       {/* ========== SIGNATURE MODAL ========== */}
@@ -3733,164 +3704,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   );
 }
 
-function SettingsModal(props) {
-  var p = props.profile || {};
-  const [displayName, setDisplayName] = useState(p.displayName || "");
-  const [credentials, setCredentials] = useState(p.credentials || "");
-  const [role, setRole] = useState(p.role || "");
-  const [locations, setLocations] = useState(p.locations || []);
-  const [licensedStates, setLicensedStates] = useState((p.licensedStates || []).join(", "));
-  const [sigImage, setSigImage] = useState(p.signatureUrl ? "EXISTING" : "");
-  const [drawing, setDrawing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const canvasRef = React.useRef(null);
-
-  function toggleLoc(siteId) {
-    setLocations(function(prev) {
-      return prev.indexOf(siteId) === -1 ? prev.concat([siteId]) : prev.filter(function(s){return s !== siteId});
-    });
-  }
-
-  function startDraw(e) {
-    setDrawing(true);
-    var c = canvasRef.current; if (!c) return;
-    var rect = c.getBoundingClientRect();
-    var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-    var y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
-    var ctx = c.getContext("2d");
-    ctx.beginPath(); ctx.moveTo(x, y);
-  }
-  function moveDraw(e) {
-    if (!drawing) return;
-    e.preventDefault();
-    var c = canvasRef.current; if (!c) return;
-    var rect = c.getBoundingClientRect();
-    var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-    var y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
-    var ctx = c.getContext("2d");
-    ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.strokeStyle = "#000";
-    ctx.lineTo(x, y); ctx.stroke();
-  }
-  function endDraw() {
-    setDrawing(false);
-    if (canvasRef.current) setSigImage(canvasRef.current.toDataURL("image/png"));
-  }
-  function clearSig() {
-    var c = canvasRef.current;
-    if (c) { var ctx = c.getContext("2d"); ctx.clearRect(0, 0, c.width, c.height); }
-    setSigImage("");
-  }
-
-  function save() {
-    if (!role) { props.flash("Role is required", "err"); return; }
-    if (!displayName) { props.flash("Display name is required", "err"); return; }
-    if (!sigImage) { props.flash("Signature is required", "err"); return; }
-    if (locations.length === 0) { props.flash("Select at least one location", "err"); return; }
-    setSaving(true);
-    var body = {
-      _action: "saveUserProfile",
-      email: props.email,
-      displayName: displayName,
-      credentials: credentials,
-      role: role,
-      locations: locations,
-      licensedStates: licensedStates.split(",").map(function(s){return s.trim().toUpperCase()}).filter(Boolean),
-      signatureUrl: p.signatureUrl || ""
-    };
-    if (sigImage && sigImage !== "EXISTING") body.signatureImage = sigImage;
-    fetch(props.sheetUrl, { method: "POST", body: JSON.stringify(body) })
-      .then(function(r){return r.json()})
-      .then(function(j) {
-        setSaving(false);
-        if (j && j.status === "ok") props.onSaved(j.profile);
-        else props.flash("Save failed: " + (j && j.message || "unknown"), "err");
-      })
-      .catch(function(e) { setSaving(false); props.flash("Save failed: " + e, "err"); });
-  }
-
-  var ic = "w-full p-2 border border-gray-300 rounded text-sm";
-  var lc = "block text-xs font-semibold text-gray-700 mb-1";
-  var isPhysician = String(role).toLowerCase() === "physician";
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-md w-full max-h-full overflow-y-auto p-4">
-        <div className="flex justify-between items-center mb-3">
-          <h2 className="text-lg font-semibold">User Profile</h2>
-          {p.role && <button onClick={props.onClose} className="text-gray-400 text-xl">&times;</button>}
-        </div>
-        {!p.role && (
-          <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs p-2 rounded mb-3">
-            Complete your profile to start using the app. This determines whether your documents need cosignature.
-          </div>
-        )}
-        <div className="space-y-3">
-          <div>
-            <label className={lc}>Display Name</label>
-            <input className={ic} value={displayName} onChange={function(e){setDisplayName(e.target.value)}} placeholder="Jane Doe" />
-          </div>
-          <div>
-            <label className={lc}>Credentials</label>
-            <input className={ic} value={credentials} onChange={function(e){setCredentials(e.target.value)}} placeholder="RN, BSN" />
-          </div>
-          <div>
-            <label className={lc}>Role</label>
-            <select className={ic} value={role} onChange={function(e){setRole(e.target.value)}}>
-              <option value="">— Select —</option>
-              <option value="ma">Medical Assistant</option>
-              <option value="apc">Nurse / NP / PA</option>
-              <option value="physician">Physician</option>
-            </select>
-            {role && role !== "physician" && (
-              <div className="text-xs text-gray-500 mt-1">Your documents will require physician cosignature.</div>
-            )}
-          </div>
-          <div>
-            <label className={lc}>Practice Locations</label>
-            {props.sitesList.length === 0 && (
-              <div className="text-xs text-red-600">No sites configured. Admin: add rows to the Sites tab in the sheet.</div>
-            )}
-            <div className="space-y-1">
-              {props.sitesList.map(function(s) {
-                return (
-                  <label key={s.siteId} className="flex items-center text-sm">
-                    <input type="checkbox" className="mr-2"
-                      checked={locations.indexOf(s.siteId) !== -1}
-                      onChange={function(){toggleLoc(s.siteId)}} />
-                    {s.name} ({s.state})
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-          {isPhysician && (
-            <div>
-              <label className={lc}>Licensed States (comma separated)</label>
-              <input className={ic} value={licensedStates} onChange={function(e){setLicensedStates(e.target.value)}} placeholder="DE, MD, VA" />
-              <div className="text-xs text-gray-500 mt-1">Used to route cosign requests when no physician is mapped to a specific site.</div>
-            </div>
-          )}
-          <div>
-            <label className={lc}>Signature {p.signatureUrl && sigImage === "EXISTING" && <span className="text-green-600">(saved — draw to replace)</span>}</label>
-            <canvas ref={canvasRef} width={350} height={120}
-              className="w-full border border-gray-300 rounded bg-white"
-              style={{touchAction: "none"}}
-              onMouseDown={startDraw} onMouseMove={moveDraw} onMouseUp={endDraw} onMouseLeave={endDraw}
-              onTouchStart={startDraw} onTouchMove={moveDraw} onTouchEnd={endDraw} />
-            <button onClick={clearSig} className="mt-1 text-xs text-gray-500 underline">Clear</button>
-          </div>
-          <div className="flex gap-2 pt-2">
-            {p.role && <button onClick={props.onClose} className="flex-1 py-2 border border-gray-300 rounded text-sm">Cancel</button>}
-            <button onClick={save} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:opacity-50">
-              {saving ? "Saving..." : "Save Profile"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ============================================================
 // FIREBASE AUTH CONFIG - fill these in from your Firebase console
 // console.firebase.google.com → Project Settings → Web app → Config
@@ -3910,11 +3723,7 @@ const ALLOWED_EMAILS = [
   "evan.leitner@gmail.com",
   "lindseyallannelson@gmail.com",
   "diabeticnerveclinic@gmail.com",
-  "bradley.burdick@huntington.com", // Bradley Burdick
-  "1025asm@gmail.com",           // Aileen McGoldrick, RN
-  "nicolegeorgi@hotmail.com",    // Nicole Georgi, MD
-  "goodnightmaryellenllc@gmail.com", // Mary Ellen O'Brien, CRNA
-  "sheilakay111@yahoo.com",     // Sheila Kay, RN
+  "bradley.burdick@huntington.com"
 ];
 
 // Initialize Firebase only if config is filled in
