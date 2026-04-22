@@ -223,6 +223,10 @@ const defaultState = {
   diabetesDuration: "", diabetesType: "Type 2", age: "", sex: "",
   // Patient contact + demo (for requisition form)
   address: "", city: "", state: "", zip: "", phone: "", email: "", dob: "",
+  // Patient-stated contact preference for scheduling/reminders. Captured on
+  // intake. Values: "SMS" | "Call" | "Email" | "" (not yet asked).
+  // Drives routing of future preauth-approved and D0-reminder notifications.
+  commPref: "",
   // Insurance (parsed from Medicare card)
   insuranceName: "", memberId: "", groupNum: "", effectiveDate: "",
   insuredName: "",
@@ -2526,6 +2530,19 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     );
                   })()}
                   {ref.dncId && <div className="text-xs text-blue-500">ID: {ref.dncId}</div>}
+                {/* Comm preference badge. Visible on every card post-intake so
+                    any clinician can see at a glance how to reach this patient.
+                    Blank = not yet captured. Icons are redundant with text but
+                    help scan a long list. */}
+                {ref.commPref && (
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    {ref.commPref === "SMS" ? "📱 SMS" :
+                     ref.commPref === "Call" ? "📞 Call" :
+                     ref.commPref === "Email" ? "✉️ Email" :
+                     ref.commPref === "No preference" ? "↔️ No pref" :
+                     ref.commPref}
+                  </div>
+                )}
                 {/* Call tally: only shown when attempts > 0. Gives MA a quick
                     read on whether this referral has been pursued already
                     without opening the card. Format: "📞 3 attempts · last 4/20 2:45pm"
@@ -2542,6 +2559,60 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   return (
                     <div className="text-xs text-gray-500 mt-0.5">
                       📞 {n} {n === 1 ? "attempt" : "attempts"}{lastShort ? " · last " + lastShort : ""}
+                    </div>
+                  );
+                })()}
+
+                {/* Latest notification event from the log. Shows any automated
+                    or manual contact attempt (AI call, SMS, email, manual call)
+                    across any type (preauth-schedule, d0-reminder, d3-checkin,
+                    etc.). Gives the MA a live view of "what's been tried" at
+                    a glance without opening anything. Channel icons + status
+                    color make it scannable. Empty when no events logged yet.
+                    Escalated status uses red to draw attention — that's where
+                    a human needs to act. */}
+                {ref.latestEvent && (function(){
+                  var ev = ref.latestEvent;
+                  var channelIcon =
+                    ev.channel === "ai-call" ? "🤖" :
+                    ev.channel === "sms" ? "📱" :
+                    ev.channel === "email" ? "✉️" :
+                    ev.channel === "manual-call" ? "📞" :
+                    ev.channel === "manual-sms" ? "💬" : "•";
+                  var statusLabel =
+                    ev.status === "completed" ? "✓" :
+                    ev.status === "in-progress" ? "↻" :
+                    ev.status === "pending" ? "…" :
+                    ev.status === "escalated" ? "⚠️" :
+                    ev.status === "no-response" ? "∅" :
+                    ev.status === "failed" ? "✗" : ev.status;
+                  var bg =
+                    ev.status === "escalated" || ev.status === "failed" ? "bg-red-50 border-red-200 text-red-700" :
+                    ev.status === "in-progress" || ev.status === "pending" ? "bg-yellow-50 border-yellow-200 text-yellow-700" :
+                    "bg-gray-50 border-gray-200 text-gray-600";
+                  var tsShort = "";
+                  var tsRaw = ev.completedAt || ev.initiatedAt;
+                  if (tsRaw) {
+                    try {
+                      var d = new Date(tsRaw);
+                      var now = new Date();
+                      var minsAgo = Math.floor((now - d) / 60000);
+                      if (minsAgo < 1) tsShort = "just now";
+                      else if (minsAgo < 60) tsShort = minsAgo + "m ago";
+                      else if (minsAgo < 1440) tsShort = Math.floor(minsAgo / 60) + "h ago";
+                      else tsShort = (d.getMonth()+1)+"/"+d.getDate();
+                    } catch(e){}
+                  }
+                  var typeLabel = String(ev.type || "").replace(/-/g, " ");
+                  return (
+                    <div className={"text-xs mt-1 px-2 py-1 rounded border " + bg}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium truncate">
+                          {channelIcon} {typeLabel} {statusLabel}
+                        </span>
+                        {tsShort && <span className="text-[10px] opacity-70 whitespace-nowrap">{tsShort}</span>}
+                      </div>
+                      {ev.outcome && <div className="truncate opacity-80 mt-0.5">{ev.outcome}</div>}
                     </div>
                   );
                 })()}
@@ -2853,6 +2924,34 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <input className={ic} value={form.zip} onChange={function(e){set("zip",e.target.value)}} placeholder="Zip" />
                     </div>
                     <input className={ic} type="email" value={form.email} onChange={function(e){set("email",e.target.value)}} placeholder="Email (optional)" />
+                  </div>
+
+                  {/* Comm preference: MA asks the patient once during intake, stored
+                      on the throughput row. Drives routing of preauth-approved
+                      notifications, D0 reminders, and future scheduling nudges.
+                      SMS selection shows TCPA-compliant consent language inline —
+                      required before sending any automated/templated SMS under
+                      federal TCPA rules. Default blank forces the question to
+                      actually be asked rather than silently defaulting. */}
+                  <div className="bg-gray-50 rounded p-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-2">CONTACT PREFERENCE</div>
+                    <label className={lc}>How should we reach you to schedule appointments and send reminders?</label>
+                    <select className={ic} value={form.commPref} onChange={function(e){set("commPref",e.target.value)}}>
+                      <option value="">-- ask patient --</option>
+                      <option value="SMS">Text message (SMS)</option>
+                      <option value="Call">Phone call</option>
+                      <option value="Email">Email</option>
+                      <option value="No preference">No preference</option>
+                    </select>
+                    {form.commPref === "SMS" && (
+                      <div className="text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded p-2 mt-2">
+                        <div className="font-semibold text-blue-700 mb-1">SMS consent (read to patient):</div>
+                        "By choosing text messaging, you're giving Diabetic Nerve Clinic permission to
+                        send automated text messages to {form.phone || "[your phone number]"} for appointment
+                        scheduling, reminders, and care coordination. Standard message and data rates may
+                        apply. You can opt out at any time by replying STOP."
+                      </div>
+                    )}
                   </div>
 
                   <div className="bg-gray-50 rounded p-3">
