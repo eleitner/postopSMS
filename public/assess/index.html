@@ -416,6 +416,7 @@ function App() {
   const [callModalRef, setCallModalRef] = useState(null);
   const [callOutcome, setCallOutcome] = useState(""); // "no_answer" | "voicemail_full" | "left_vm" | "wrong_number" | "patient_hung_up" | "other"
   const [callOutcomeReason, setCallOutcomeReason] = useState(""); // free-text for "other"
+  const [callFollowupNote, setCallFollowupNote] = useState(""); // optional forward-looking note: "call back Thu 7pm"
   const [callSubmitting, setCallSubmitting] = useState(false);
   // Inline patient name search on the Assess tab. Queries backend searchPatients,
   // returns matches filtered to the current user's sites.
@@ -616,6 +617,7 @@ function App() {
       setCallModalRef(null);
       setCallOutcome("");
       setCallOutcomeReason("");
+      setCallFollowupNote("");
     }
   }
 
@@ -664,6 +666,7 @@ function App() {
     setCallModalRef(ref);
     setCallOutcome("");
     setCallOutcomeReason("");
+    setCallFollowupNote("");
   }
 
   // Submits a non-reached call attempt. Increments the server-side tally and
@@ -682,6 +685,9 @@ function App() {
     };
     var outcomeText = outcomeLabels[callOutcome] || callOutcome || "No answer";
     var reasonText = callOutcome === "other" ? callOutcomeReason : "";
+    // Forward-looking follow-up note. Optional, gets appended to log entry so
+    // next MA who looks at the card sees "call back Thu 7pm" or whatever.
+    var followupText = (callFollowupNote || "").trim();
     setCallSubmitting(true);
     var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser) ? firebase.auth().currentUser.email : "";
     try {
@@ -692,17 +698,22 @@ function App() {
           rowIndex: ref.rowIndex,
           outcome: outcomeText,
           reason: reasonText,
+          followupNote: followupText,
           userEmail: userEmail
         })
       });
-      // Optimistic: bump tally locally so card updates without a refresh
+      // Optimistic: bump tally locally so card updates without a refresh.
+      // Mirror the backend's entry format so prior-attempts block shows the
+      // same text whether read from cache or re-fetched from sheet.
       setReferrals(function(prev) {
         return prev.map(function(r) {
           if (r.rowIndex !== ref.rowIndex) return r;
           var newCount = (parseInt(r.callAttempts, 10) || 0) + 1;
           var now = new Date();
           var tsShort = (now.getMonth()+1)+"/"+now.getDate()+" "+((now.getHours()%12)||12)+":"+(now.getMinutes()<10?"0":"")+now.getMinutes()+(now.getHours()>=12?"pm":"am");
-          var entry = tsShort + " — " + outcomeText + (reasonText ? " (" + reasonText + ")" : "");
+          var entry = tsShort + " — " + outcomeText +
+                      (reasonText ? " (" + reasonText + ")" : "") +
+                      (followupText ? " | \"" + followupText + "\"" : "");
           return Object.assign({}, r, {
             callAttempts: newCount,
             lastCallAt: now.toISOString(),
@@ -718,6 +729,7 @@ function App() {
     setCallModalRef(null);
     setCallOutcome("");
     setCallOutcomeReason("");
+    setCallFollowupNote("");
   }
 
   function startIntakeFromReferral(ref) {
@@ -3732,7 +3744,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           - Reached → closes modal, jumps to startIntakeFromReferral (existing flow)
           - Any other outcome → logs attempt, card stays "Referral Received" */}
       {callModalRef && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(e){if(e.target===e.currentTarget){setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason("");}}}>
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(e){if(e.target===e.currentTarget){setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason(""); setCallFollowupNote("");}}}>
           <div className="bg-white rounded-lg p-4 max-w-md w-full" onClick={function(e){e.stopPropagation()}}>
             <div className="text-sm font-semibold text-gray-800 mb-1">Call {callModalRef.name || "patient"}</div>
             {callModalRef.phone && <div className="text-xs text-gray-500 mb-3">{callModalRef.phone}</div>}
@@ -3750,7 +3762,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             <div className="space-y-2 mb-3">
               <button onClick={function(){
                 var ref = callModalRef;
-                setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason("");
+                setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason(""); setCallFollowupNote("");
                 startIntakeFromReferral(ref);
               }} className="w-full py-2 bg-green-600 text-white rounded text-sm font-medium">
                 Yes — start intake now
@@ -3773,8 +3785,17 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 value={callOutcomeReason} onChange={function(e){setCallOutcomeReason(e.target.value)}} />
             )}
 
+            {/* Forward-looking follow-up note. Optional, applies to any outcome.
+                Use case: MA talks to family, they say "call back 7-8pm", MA
+                jots that here so next MA who picks up this card sees it right
+                at the top of the call log. Not a separate reminder — just
+                context inline with the attempt. */}
+            <input className={ic + " mb-2"}
+              placeholder="Follow-up note (optional) — e.g. call back Thu 7pm"
+              value={callFollowupNote} onChange={function(e){setCallFollowupNote(e.target.value)}} />
+
             <div className="flex gap-2 mt-2">
-              <button onClick={function(){setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason("")}}
+              <button onClick={function(){setCallModalRef(null); setCallOutcome(""); setCallOutcomeReason(""); setCallFollowupNote("")}}
                 className="flex-1 py-2 bg-gray-100 text-gray-700 text-sm rounded font-medium">Cancel</button>
               <button onClick={submitCallAttempt}
                 disabled={!callOutcome || callSubmitting || (callOutcome === "other" && !callOutcomeReason.trim())}
