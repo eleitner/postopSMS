@@ -28,6 +28,31 @@ const SHEET_URL_KEY = "dpn-sheet-url";
 const DEFAULT_SHEET_URL = "https://script.google.com/macros/s/AKfycbzF12eGtZJesIFLDkusV-MUx7OS88XuXC-fr6-EqoEeW6TnQLts5u2vSNtk5PpI5nUn/exec";
 const DIRECTORY_KEY = "dpn-directory";
 
+// ============================================================
+// ONE-TIME LEGACY URL MIGRATION
+// Existing users have the old personal-Gmail Apps Script URL cached in their
+// browser localStorage. Without this, their app keeps hitting the OLD
+// deployment (which writes to personal Drive, not BAA-covered Workspace Drive)
+// even though the code below points at the new Workspace deployment.
+// On next page load, any user whose cached URL matches a known-legacy entry
+// gets silently upgraded to DEFAULT_SHEET_URL. No user action required.
+// Add new legacy URLs to this list if this happens again later.
+// ============================================================
+const LEGACY_SHEET_URLS = [
+  "https://script.google.com/macros/s/AKfycbzZyM-qctswkkk17AQewg36TAddU9lSvtQmUfH1Ffqgi-Q4zwV8TQq08REreYLSOEAB/exec"
+];
+(function migrateLegacySheetUrl() {
+  try {
+    var stored = localStorage.getItem(SHEET_URL_KEY);
+    if (stored && LEGACY_SHEET_URLS.indexOf(stored) !== -1) {
+      localStorage.setItem(SHEET_URL_KEY, DEFAULT_SHEET_URL);
+      console.log("Auto-migrated legacy Apps Script URL to Workspace deployment.");
+    }
+  } catch(e) {
+    console.error("Legacy URL migration check failed:", e);
+  }
+})();
+
 const storage = {
   get(k) { const v = localStorage.getItem(k); return v ? { value: v } : null; },
   set(k, v) { localStorage.setItem(k, v); return { key: k, value: v }; },
@@ -2626,7 +2651,18 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       className="flex-1 py-1.5 bg-yellow-500 text-white rounded text-xs font-medium">Mark Called</button>
                   )}
                   {ref.dncId && (
-                    <button onClick={function(){setForm(function(f){return Object.assign({}, f, {patientId: ref.dncId})}); setView("form"); loadDraft(ref.dncId);}}
+                    <button onClick={function(){
+                      // Reset form to clean state with this patient's ID so that if
+                      // the draft doesn't exist in cloud or local, we're not showing
+                      // stale data from a previously-loaded patient. loadDraft will
+                      // overwrite form with full draft data if found; if not found,
+                      // user sees a clean form labeled with the correct patient ID.
+                      setForm(Object.assign({}, defaultState, { date: todayLocal(), patientId: ref.dncId }));
+                      setPatientName(ref.name || "");
+                      setFormSection("intake");
+                      setView("form");
+                      loadDraft(ref.dncId);
+                    }}
                       className="flex-1 py-1.5 bg-gray-200 text-gray-700 rounded text-xs font-medium">Open Draft</button>
                   )}
                   <button onClick={function(){
@@ -3818,6 +3854,11 @@ const FIREBASE_CONFIG = {
 
 // Allowlist: only these emails can access the app.
 // Add MAs, clinicians, billers as you onboard them.
+// NOTE: This hardcoded list is the first-line gate. The Users sheet in the
+// backend is the authoritative allowlist — it carries role, site assignments,
+// signature URL, etc. Keep both in sync when onboarding. Eventually we can
+// remove this hardcoded list and source purely from Users sheet, but until
+// then, treat the Users sheet as source of truth and mirror here.
 const ALLOWED_EMAILS = [
   "evan.leitner@gmail.com",
   "lindseyallannelson@gmail.com",
@@ -3825,7 +3866,7 @@ const ALLOWED_EMAILS = [
   "bradley.burdick@huntington.com",
   "nicolegeorgi@hotmail.com",
   "sheilakay111@yahoo.com",
-  "1025asm@gmail.com",
+  "1025asm@gmail.com"
 ];
 
 // Initialize Firebase only if config is filled in
