@@ -15,6 +15,104 @@
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fff}*{-webkit-tap-highlight-color:transparent}</style>
+<script>
+// ============================================================
+// CACHE-BUST + VERSION CHECK
+// GitHub Pages doesn't let us set HTTP cache headers, so home-screen PWA
+// shortcuts (like Lindsey's iOS bookmark) aggressively cache the HTML and
+// can keep serving stale code for days after a deploy. This block runs
+// BEFORE the main app loads and does two things:
+//
+// 1. On first load after a deploy, compare APP_VERSION in the freshly-loaded
+//    HTML against the version stored in localStorage. If different:
+//       - purge any service worker cache entries
+//       - bump stored version
+//       - hard-reload bypassing cache to ensure all sub-resources are fresh
+//
+// 2. Every time the app is foregrounded (iOS PWA resume or tab switch back),
+//    re-fetch the HTML with a cache-bust query string and compare the
+//    embedded APP_VERSION. If the server has a newer version, prompt or
+//    auto-reload.
+//
+// Bumping APP_VERSION on every deploy is the trigger. One manual step.
+// ============================================================
+window.__APP_VERSION = "2026-04-24-06";
+
+(function initCacheBust() {
+  try {
+    var VERSION_KEY = "dnc-app-version";
+    var stored = localStorage.getItem(VERSION_KEY);
+
+    // First load: stamp version and proceed
+    if (!stored) {
+      localStorage.setItem(VERSION_KEY, window.__APP_VERSION);
+      return;
+    }
+
+    // Version mismatch: stored version is older than what we just downloaded.
+    // Purge caches, update stamp, force hard reload. location.reload(true) is
+    // deprecated in some browsers but still works on iOS Safari; the cache
+    // purge below belts-and-suspenders covers cases where it's a no-op.
+    if (stored !== window.__APP_VERSION) {
+      console.log("Version mismatch (" + stored + " → " + window.__APP_VERSION + "). Purging caches.");
+      localStorage.setItem(VERSION_KEY, window.__APP_VERSION);
+      // Purge all Cache Storage entries (service worker cache)
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          return Promise.all(names.map(function(n) { return caches.delete(n); }));
+        }).finally(function() {
+          // Break any in-flight cache on reload
+          window.location.replace(window.location.pathname + "?v=" + Date.now());
+        });
+      } else {
+        window.location.replace(window.location.pathname + "?v=" + Date.now());
+      }
+      return;
+    }
+
+    // Same version — no-op. Foreground re-check runs below.
+  } catch(e) {
+    console.error("Cache-bust init failed:", e);
+  }
+})();
+
+// Foreground re-check: when app is brought back to focus (iOS PWA resume,
+// tab switch-back), quietly fetch the live HTML with a cache-bust and see
+// if the server has a newer APP_VERSION. If so, auto-reload. This catches
+// the case where a user leaves the app open for days and we've deployed
+// multiple times.
+window.addEventListener("visibilitychange", function() {
+  if (document.visibilityState !== "visible") return;
+  try {
+    fetch(window.location.pathname + "?v=" + Date.now(), {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" }
+    }).then(function(r) { return r.text(); }).then(function(html) {
+      var match = html.match(/window\.__APP_VERSION\s*=\s*"([^"]+)"/);
+      if (match && match[1] && match[1] !== window.__APP_VERSION) {
+        console.log("Newer version available on server: " + match[1]);
+        // Don't interrupt a user mid-flow unless they're idle. Check if
+        // they're actively editing (any input has focus); if so, defer.
+        var activeEl = document.activeElement;
+        var isEditing = activeEl && (
+          activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          activeEl.tagName === "SELECT" ||
+          activeEl.isContentEditable
+        );
+        if (!isEditing) {
+          localStorage.setItem("dnc-app-version", match[1]);
+          window.location.reload();
+        } else {
+          // Flag it in a global so the app can show a subtle "update available"
+          // banner if it wants. For now, just log.
+          window.__updateAvailable = match[1];
+        }
+      }
+    }).catch(function(e) { /* silent — network failure shouldn't block app */ });
+  } catch(e) {}
+});
+</script>
 </head>
 <body>
 <div id="root"></div>
@@ -405,6 +503,14 @@ function App() {
   const [parsing, setParsing] = useState(false);
   const [referrals, setReferrals] = useState([]);
   const [referralsLoading, setReferralsLoading] = useState(false);
+
+  // Cosign queue — documents awaiting this user's signature.
+  // Fetched from backend's listCosignQueue endpoint, filtered by logged-in email.
+  // Each item: {cosignId, docType, docName, docUrl, docId, patientId,
+  //             authorEmail, authorRole, siteId, createdAt, notes}
+  const [cosignQueue, setCosignQueue] = useState([]);
+  const [cosignLoading, setCosignLoading] = useState(false);
+  const [cosignSigning, setCosignSigning] = useState(null); // cosignId currently being signed
   const [role, setRole] = useState(localStorage.getItem("dncRole") || "ma");
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
   const [dupModal, setDupModal] = useState(null); // {existing: {...}, source} when a duplicate referral is detected
@@ -525,6 +631,77 @@ function App() {
     } catch(e) { flash("Load error: " + e.toString(), "err"); }
     setReferralsLoading(false);
   }
+
+  // Load pending cosign queue for the currently-signed-in user. Backend filters
+  // by email server-side — we just pass the email and it returns docs where
+  // cosigner == this user AND status == pending. Safe to call frequently; this
+  // is used on tab focus + on manual refresh.
+  async function loadCosignQueue() {
+    if (!sheetUrl) return;
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+      ? firebase.auth().currentUser.email : "";
+    if (!userEmail) { flash("Sign in required", "err"); return; }
+    setCosignLoading(true);
+    try {
+      var resp = await fetch(sheetUrl + "?action=listCosignQueue&email=" + encodeURIComponent(userEmail));
+      var result = await resp.json();
+      if (result.status === "ok") {
+        setCosignQueue(result.queue || []);
+      } else {
+        flash("Cosign queue error: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) {
+      flash("Cosign load error: " + e.toString(), "err");
+    }
+    setCosignLoading(false);
+  }
+
+  // Sign a specific cosign entry. Backend handles:
+  //   - marking the Cosign row as "signed"
+  //   - appending physician signature PNG to the Doc
+  //   - advancing throughput status to "Cosigned" once ALL of this patient's
+  //     cosigns are signed
+  //   - notifying the author by email
+  async function signCosignEntry(cosignId, docType, patientId) {
+    if (!sheetUrl || !cosignId) return;
+    if (!confirm("Sign " + (docType || "document") + " for " + (patientId || "patient") + "?\n\nThis appends your signature to the Doc and marks it signed. You can't undo this from the app.")) {
+      return;
+    }
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+      ? firebase.auth().currentUser.email : "";
+    setCosignSigning(cosignId);
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          _action: "signCosign",
+          cosignId: cosignId,
+          email: userEmail
+        })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        flash("Signed: " + (docType || "document"));
+        // Remove from local queue immediately (optimistic) — backend has already
+        // flipped the status, so a re-fetch would show same result.
+        setCosignQueue(function(prev) {
+          return prev.filter(function(c) { return c.cosignId !== cosignId; });
+        });
+      } else {
+        flash("Sign failed: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) {
+      flash("Sign error: " + e.toString(), "err");
+    }
+    setCosignSigning(null);
+  }
+
+  // Auto-load cosign queue when user switches to the Cosign tab.
+  useEffect(function() {
+    if (view === "cosign") {
+      loadCosignQueue();
+    }
+  }, [view]);
 
   async function addReferral(forceAdd, source) {
     // source: undefined = form path (uses newRef), or {queueId} = queue path
@@ -1193,15 +1370,37 @@ function App() {
       rightFootPost: (draftData && draftData.rightFootPost) || Array(12).fill(false),
     });
     setForm(loaded);
-    // Also save to local drafts
+    // Also save to local drafts keyed by the patientId we just loaded (pid),
+    // not form.patientId — form.patientId is stale because setForm is async
+    // and hasn't applied the new patientId yet at this point.
     var updated = Object.assign({}, drafts);
-    updated[form.patientId] = draftData;
+    updated[pid] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
-    // Auto-fill name from directory
-    var dirEntry = directory.find(function(e) { return e.id === form.patientId; });
-    if (dirEntry) setPatientName(dirEntry.name);
-    flash("Loaded " + form.patientId);
+    // Auto-fill name from directory. BUG FIX: previously used form.patientId
+    // which was stale (still the previous patient) because setForm above is
+    // async. Use pid (the argument/resolved ID) instead. Without this, clicking
+    // Open Draft on a different patient loaded that patient's intake data but
+    // displayed the PREVIOUSLY-viewed patient's name in the header, which is
+    // dangerous in a clinical workflow — MA could be writing notes on Mr. X
+    // while thinking they're on Mrs. Y.
+    //
+    // Fallback chain: directory → draft's own patientName field → blank
+    // (rather than carry over prior patient's name). The draft's patientName
+    // field is authoritative because it was set at draft creation time; the
+    // directory is a cache that may be stale.
+    var dirEntry = directory.find(function(e) { return e.id === pid; });
+    if (dirEntry) {
+      setPatientName(dirEntry.name);
+    } else if (draftData && draftData.patientName) {
+      setPatientName(draftData.patientName);
+    } else {
+      // No name source available. Clear rather than keep the previous patient's
+      // name visible — a blank field is a clear signal that something's missing,
+      // whereas a stale name is an actively misleading display.
+      setPatientName("");
+    }
+    flash("Loaded " + pid);
   }
 
   function getDraftList() { return Object.keys(drafts); }
@@ -1985,13 +2184,22 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(saveDraftPayload) });
 
       // Then generate the preauth packet
+      // CRITICAL: userEmail must be included so backend can look up author
+      // profile → determine if cosign is needed (any non-physician author
+      // requires cosign). Omitting this was a silent bug: preauthAuthorProfile
+      // would be null, the cosign-guard short-circuited, and packets generated
+      // by Bradley/CRNAs went straight to biller without ever creating a
+      // Cosign row. Patients slipped through unsigned until we caught it.
+      var preauthUserEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+        ? firebase.auth().currentUser.email : "";
       var payload = {
         _action: "generatePreauth",
         patientId: form.patientId,
         patientName: patientName,
         date: form.date,
         hnpText: generateHnP(),
-        lomnText: generateLOMN()
+        lomnText: generateLOMN(),
+        userEmail: preauthUserEmail
       };
       await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
       flash("Draft saved + preauth packet sent to biller", "ok");
@@ -2301,13 +2509,31 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   var draftList = getDraftList();
 
   return (
-    <div className="max-w-lg mx-auto bg-white min-h-screen">
+    <div className="max-w-lg md:max-w-3xl lg:max-w-4xl mx-auto bg-white min-h-screen">
+      {/* Tab bar redesigned for iPhone Chrome (~390px viewport):
+          - 7 tabs + settings used to overflow at flex-1; "Referrals" alone needs ~60px
+            but only got ~50px per slot, so text spilled or wrapped.
+          - Shorter labels ("Refs" vs "Referrals") buy us horizontal headroom.
+          - whitespace-nowrap prevents any remaining wrap if a user has a smaller
+            phone or the system font is wider (Chrome on some Androids is +15%).
+          - text-xs on the base, sm:text-sm for larger screens, keeps everything
+            legible without starving narrow viewports.
+          - The settings "+" becomes a compact gear icon that doesn't fight for
+            horizontal space with the primary navigation.
+          - min-w-0 on the tab wrapper lets flex-1 actually shrink below content
+            width — without it, flex-1 silently refuses to compress long labels. */}
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
-        {[["referrals","Referrals"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
-          var v = item[0], l = item[1];
-          return <button key={v} onClick={function(){setView(v)}} className={"flex-1 py-2.5 text-sm font-medium " + (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
-        })}
-        <button onClick={function(){setShowConfig(!showConfig)}} className="px-3 py-2.5 text-gray-400 text-sm">{showConfig ? "X" : "+"}</button>
+        <div className="flex-1 flex min-w-0">
+          {[["referrals","Refs"],["cosign","Cosign"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
+            var v = item[0], l = item[1];
+            return <button key={v} onClick={function(){setView(v)}}
+              className={"flex-1 min-w-0 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap px-1 " +
+                (view===v ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500")}>{l}</button>;
+          })}
+        </div>
+        <button onClick={function(){setShowConfig(!showConfig)}}
+          className="shrink-0 px-2.5 py-2.5 text-gray-400 text-base"
+          aria-label="Settings">{showConfig ? "✕" : "⚙"}</button>
       </div>
 
       {showConfig && (
@@ -2689,6 +2915,86 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             );
           });
           })()}
+        </div>
+      )}
+
+      {/* ========== CONSENT TAB ========== */}
+      {/* ========== COSIGN TAB ========== */}
+      {/* Shows documents awaiting this user's signature. Typical users:
+          Lindsey (MD) as cosigner for CRNA/NP authors, or whichever physician
+          is mapped to each site. The backend filters by the signed-in user's
+          email, so this list only shows what THIS user needs to sign. */}
+      {view === "cosign" && (
+        <div className="p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-lg font-semibold text-gray-800">Cosign Queue</div>
+              <div className="text-xs text-gray-500">Documents awaiting your signature</div>
+            </div>
+            <button onClick={loadCosignQueue}
+              className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded text-xs font-medium">
+              Refresh
+            </button>
+          </div>
+
+          {cosignLoading && (
+            <div className="text-center text-gray-400 text-sm py-6">Loading...</div>
+          )}
+
+          {!cosignLoading && cosignQueue.length === 0 && (
+            <div className="text-center py-8">
+              <div className="text-4xl mb-2">✓</div>
+              <div className="text-gray-500 text-sm">No documents awaiting your signature.</div>
+            </div>
+          )}
+
+          {!cosignLoading && cosignQueue.length > 0 && cosignQueue.map(function(c) {
+            var createdShort = "";
+            if (c.createdAt) {
+              try {
+                var d = new Date(c.createdAt);
+                var now = new Date();
+                var mins = Math.floor((now - d) / 60000);
+                if (mins < 1) createdShort = "just now";
+                else if (mins < 60) createdShort = mins + "m ago";
+                else if (mins < 1440) createdShort = Math.floor(mins/60) + "h ago";
+                else createdShort = Math.floor(mins/1440) + "d ago";
+              } catch(e) { createdShort = ""; }
+            }
+            var isSigning = cosignSigning === c.cosignId;
+            return (
+              <div key={c.cosignId} className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-gray-800 text-sm">{c.docType}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {c.patientId}{c.siteId ? " · " + c.siteId : ""}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      by {c.authorEmail}{c.authorRole ? " (" + c.authorRole + ")" : ""} · {createdShort}
+                    </div>
+                    {c.notes && (
+                      <div className="text-xs text-amber-700 mt-1 italic">{c.notes}</div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-2">
+                  {c.docUrl && (
+                    <a href={c.docUrl} target="_blank" rel="noopener noreferrer"
+                       className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-xs font-medium text-center">
+                      View Doc
+                    </a>
+                  )}
+                  <button onClick={function(){ signCosignEntry(c.cosignId, c.docType, c.patientId); }}
+                    disabled={isSigning}
+                    className={"flex-1 py-2 rounded text-xs font-medium " +
+                      (isSigning ? "bg-gray-300 text-gray-500" : "bg-green-600 text-white")}>
+                    {isSigning ? "Signing..." : "Sign"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -3885,6 +4191,7 @@ const ALLOWED_EMAILS = [
   "lindseyallannelson@gmail.com",
   "diabeticnerveclinic@gmail.com",
   "bradley.burdick@huntington.com",
+  "bradley@diabeticnerveclinic.com",
   "nicolegeorgi@hotmail.com",
   "sheilakay111@yahoo.com",
   "1025asm@gmail.com"
