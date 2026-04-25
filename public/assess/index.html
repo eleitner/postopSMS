@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-24-06";
+window.__APP_VERSION = "2026-04-24-08";
 
 (function initCacheBust() {
   try {
@@ -621,7 +621,15 @@ function App() {
     if (!sheetUrl) { flash("Set Google Apps Script URL in settings first", "err"); return; }
     setReferralsLoading(true);
     try {
-      var resp = await fetch(sheetUrl + "?action=getReferrals");
+      // Pass userEmail so backend site-filter shows only this user's sites.
+      // Backend's match is tolerant (case-insensitive, substring) so drift
+      // between Users sheet locations and Throughput siteId values doesn't
+      // silently zero the list. If Firebase auth isn't ready yet, fall back
+      // to sending no email (shows all — admin fallback).
+      var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+        ? firebase.auth().currentUser.email : "";
+      var url = sheetUrl + "?action=getReferrals" + (userEmail ? "&userEmail=" + encodeURIComponent(userEmail) : "");
+      var resp = await fetch(url);
       var result = await resp.json();
       if (result.status === "ok") {
         setReferrals(result.referrals || []);
@@ -2880,13 +2888,27 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   );
                 })()}
                 <div className="flex gap-2 pt-1">
+                  {/* Call logging button — always available regardless of pipeline
+                      stage. Bradley flagged that once intake started, there was
+                      no way to log additional call attempts (e.g., patient hung
+                      up mid-intake, or MA needed to capture "call back at 7pm"
+                      on a partially-completed draft). The full modal (outcome +
+                      follow-up note) is the right tool for ALL non-completed
+                      contact attempts, not just first contact.
+
+                      Two variants:
+                       - No DNC ID yet (fresh referral): "Call Patient"
+                         (the modal also offers "Yes — start intake now" path)
+                       - DNC ID exists (intake started or called): "Log Call"
+                         (modal still has all outcomes; "start intake" reopens
+                         the existing draft via Open Draft button) */}
                   {!ref.dncId && (
                     <button onClick={function(){openCallModal(ref)}}
                       className="flex-1 py-1.5 bg-blue-600 text-white rounded text-xs font-medium">Call Patient</button>
                   )}
-                  {ref.dncId && !ref.called && (
-                    <button onClick={function(){updateReferralStatus(ref.rowIndex, "called", new Date().toISOString()); flash("Marked as called");}}
-                      className="flex-1 py-1.5 bg-yellow-500 text-white rounded text-xs font-medium">Mark Called</button>
+                  {ref.dncId && (
+                    <button onClick={function(){openCallModal(ref)}}
+                      className="flex-1 py-1.5 bg-yellow-500 text-white rounded text-xs font-medium">📞 Log Call</button>
                   )}
                   {ref.dncId && (
                     <button onClick={function(){
