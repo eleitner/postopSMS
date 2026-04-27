@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-24-08";
+window.__APP_VERSION = "2026-04-24-14";
 
 (function initCacheBust() {
   try {
@@ -308,6 +308,68 @@ function compareNumeric(field, primary, verified) {
 //   "red"     = anything else (commercial, other MA plans, Medicaid, unknown payer with insurance listed)
 //   "neutral" = no insurance info parsed at all (unknown — don't penalize)
 // Input: { primary: "Medicare Part B", secondary: "BCBS Medigap" } or empty object
+// Canonical throughput statuses. Anything outside this set is treated as
+// "non-canonical" — usually a relic from the pre-system era, hand-typed by
+// MA/biller, or AI-generated drift. Cards with non-canonical statuses get
+// a "?" indicator so they're visible for human cleanup without being
+// silently rewritten.
+//
+// SOURCE OF TRUTH: this object is seeded with sensible defaults but is
+// dynamically replaced on first load by /action=getStatusTaxonomy from the
+// backend (where STATUS_TAXONOMY lives in Code.gs). When a new status is
+// added to the backend, it propagates here automatically — frontend doesn't
+// need to be redeployed for taxonomy changes alone. The seed defaults below
+// are kept in sync with the backend so app works correctly during the brief
+// window between page load and the taxonomy fetch completing.
+//
+// "Removed: <reason>" / "Preauth Rejected: <reason>" prefix families are
+// matched via canonicalPrefixes, not the canonical map.
+var STATUS_TAXONOMY_CLIENT = {
+  canonical: {
+    "Referral Received": true, "Intake In Progress": true,
+    "Awaiting Cosign": true, "Cosigned": true,
+    "Preauth In Review": true, "Preauth Submitted": true,
+    "Preauth Rejected": true, "Authorized": true,
+    "D0 Scheduled": true, "D0 Complete": true,
+    "Trial Billing Submitted": true, "Trial Billing Approved": true,
+    "Trial Billing Rejected": true, "D20 Complete": true,
+    "D90 Complete": true, "Reimbursed": true, "Complete": true
+  },
+  canonicalPrefixes: ["Removed:", "Removed ", "Preauth Rejected", "Trial Billing Rejected"]
+};
+
+function isCanonicalStatus(status) {
+  if (!status) return true; // empty defaults to "Referral Received"
+  var s = String(status).trim();
+  if (!s) return true;
+  if (STATUS_TAXONOMY_CLIENT.canonical[s]) return true;
+  for (var i = 0; i < STATUS_TAXONOMY_CLIENT.canonicalPrefixes.length; i++) {
+    if (s.indexOf(STATUS_TAXONOMY_CLIENT.canonicalPrefixes[i]) === 0) return true;
+  }
+  return false;
+}
+
+// Fetch latest taxonomy from backend on app load. Failure is silent — seeded
+// defaults above remain in effect. This lets backend taxonomy changes
+// propagate to frontend without a redeploy.
+async function refreshStatusTaxonomy(sheetUrl) {
+  if (!sheetUrl) return;
+  try {
+    var resp = await fetch(sheetUrl + "?action=getStatusTaxonomy");
+    var result = await resp.json();
+    if (result.status === "ok" && Array.isArray(result.canonical)) {
+      var newCanonical = {};
+      result.canonical.forEach(function(s) { newCanonical[s] = true; });
+      STATUS_TAXONOMY_CLIENT.canonical = newCanonical;
+      if (Array.isArray(result.canonicalPrefixes)) {
+        STATUS_TAXONOMY_CLIENT.canonicalPrefixes = result.canonicalPrefixes;
+      }
+    }
+  } catch(e) {
+    // Quiet failure — defaults remain
+  }
+}
+
 function classifyPayer(primary, secondary) {
   var p = String(primary || "").toLowerCase();
   var s = String(secondary || "").toLowerCase();
@@ -504,6 +566,12 @@ function App() {
   const [referrals, setReferrals] = useState([]);
   const [referralsLoading, setReferralsLoading] = useState(false);
 
+  // Pending Payer Updates (admin/Lindsey reviewable). Floyd's emails detect
+  // payer auth requirements and queue rows here; we show them in the gear
+  // menu so a human approves before promoting to the main reference table.
+  const [pendingPayerUpdates, setPendingPayerUpdates] = useState([]);
+  const [pendingPayerLoading, setPendingPayerLoading] = useState(false);
+
   // Cosign queue — documents awaiting this user's signature.
   // Fetched from backend's listCosignQueue endpoint, filtered by logged-in email.
   // Each item: {cosignId, docType, docName, docUrl, docId, patientId,
@@ -545,6 +613,14 @@ function App() {
     try { var d = storage.get(DRAFTS_KEY); if (d && d.value) setDrafts(JSON.parse(d.value)); } catch(e) {}
     try { var dir = storage.get(DIRECTORY_KEY); if (dir && dir.value) setDirectory(JSON.parse(dir.value)); } catch(e) {}
   }, []);
+
+  // Refresh status taxonomy from backend when sheetUrl becomes available.
+  // This keeps the frontend's canonical-status check synchronized with the
+  // backend's STATUS_TAXONOMY without requiring a frontend redeploy when
+  // the taxonomy changes. Failure is silent (defaults remain in effect).
+  useEffect(function() {
+    if (sheetUrl) refreshStatusTaxonomy(sheetUrl);
+  }, [sheetUrl]);
 
   useEffect(function() {
     if (!currentConsent) return;
@@ -710,6 +786,60 @@ function App() {
       loadCosignQueue();
     }
   }, [view]);
+
+  // Load pending payer updates — accumulator of Floyd-detected eligibility
+  // info awaiting human approval. Called when settings panel opens.
+  async function loadPendingPayerUpdates() {
+    if (!sheetUrl) return;
+    setPendingPayerLoading(true);
+    try {
+      var resp = await fetch(sheetUrl + "?action=listPendingPayerUpdates");
+      var result = await resp.json();
+      if (result.status === "ok") {
+        setPendingPayerUpdates(result.pendingUpdates || []);
+      }
+    } catch(e) {
+      // Quiet failure — not critical to the user's main workflow
+      console.error("loadPendingPayerUpdates failed:", e);
+    }
+    setPendingPayerLoading(false);
+  }
+
+  // Approve or reject a pending payer update. Approval promotes to the
+  // main Payer Reference table; rejection just marks it audited.
+  async function resolvePayerUpdate(updateId, decision) {
+    if (!sheetUrl || !updateId) return;
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+      ? firebase.auth().currentUser.email : "";
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          _action: "resolvePayerUpdate",
+          updateId: updateId, decision: decision, email: userEmail
+        })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        flash(decision === "approved" ? "Payer added to reference table" : "Update rejected", "ok");
+        // Optimistic remove from queue
+        setPendingPayerUpdates(function(prev) {
+          return prev.filter(function(u) { return u.updateId !== updateId; });
+        });
+      } else {
+        flash("Resolve failed: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) {
+      flash("Resolve error: " + e.toString(), "err");
+    }
+  }
+
+  // Auto-load pending payer updates whenever settings panel opens
+  useEffect(function() {
+    if (showConfig) {
+      loadPendingPayerUpdates();
+    }
+  }, [showConfig]);
 
   async function addReferral(forceAdd, source) {
     // source: undefined = form path (uses newRef), or {queueId} = queue path
@@ -2575,6 +2705,116 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               </div>
             )}
           </div>
+
+          {/* Pending Payer Updates — Floyd's eligibility detection queue.
+              Hidden when empty (no signal, no UI). When updates exist,
+              shows a compact reviewer with Approve / Reject buttons.
+              Approving promotes payer to the main reference table; rejecting
+              keeps an audit trail but doesn't affect categorization. */}
+          {(pendingPayerUpdates.length > 0 || pendingPayerLoading) && (
+            <div className="border-t border-yellow-300 pt-3">
+              <div className="text-xs font-semibold text-gray-600 mb-2">
+                PENDING PAYER UPDATES ({pendingPayerUpdates.length})
+              </div>
+              <div className="text-[10px] text-gray-500 mb-2">
+                Floyd's eligibility emails detected new payer info. Review each before adding to the reference table.
+              </div>
+              {pendingPayerLoading && (
+                <div className="text-xs text-gray-400">Loading...</div>
+              )}
+              <div className="space-y-2">
+                {pendingPayerUpdates.map(function(u) {
+                  // Three queue entry types:
+                  //   "promote-precedent"   — favorable surprise (authorized for previously preauth-required payer).
+                  //                           Primary CTA: promote to auto-approved. Default green/positive treatment.
+                  //   "needs-reverification" — unfavorable surprise (rejected for previously auto-approved payer).
+                  //                           Primary CTA: KEEP CURRENT (most rejections are patient-specific, not policy).
+                  //                           Downgrade is secondary.
+                  //   "auto-approved" / "preauth-required" / "not-covered" — Floyd-detected new payer entry, normal review.
+                  var isPromotePrecedent = u.suggestedCategory === "promote-precedent";
+                  var isReverification = u.suggestedCategory === "needs-reverification";
+                  var isConflict = isPromotePrecedent || isReverification;
+
+                  var catLabel, catCls, borderCls;
+                  if (isPromotePrecedent) {
+                    catLabel = "✨ Precedent set";
+                    catCls = "bg-green-100 text-green-800 border border-green-300";
+                    borderCls = "border-2 border-green-400";
+                  } else if (isReverification) {
+                    catLabel = "⚠ Unexpected rejection";
+                    catCls = "bg-purple-100 text-purple-800 border border-purple-300";
+                    borderCls = "border-2 border-purple-400";
+                  } else if (u.suggestedCategory === "auto-approved") {
+                    catLabel = "⚡ Auto-approve";
+                    catCls = "bg-green-100 text-green-800";
+                    borderCls = "border border-gray-200";
+                  } else if (u.suggestedCategory === "preauth-required") {
+                    catLabel = "🔍 Preauth needed";
+                    catCls = "bg-amber-100 text-amber-800";
+                    borderCls = "border border-gray-200";
+                  } else if (u.suggestedCategory === "not-covered") {
+                    catLabel = "❌ Not covered";
+                    catCls = "bg-red-100 text-red-800";
+                    borderCls = "border border-gray-200";
+                  } else {
+                    catLabel = u.suggestedCategory;
+                    catCls = "bg-gray-100 text-gray-800";
+                    borderCls = "border border-gray-200";
+                  }
+
+                  return (
+                    <div key={u.updateId} className={"bg-white rounded p-2 " + borderCls}>
+                      <div className="font-medium text-xs text-gray-800">{u.payerName}</div>
+                      <div className="flex items-center gap-2 mt-1 mb-2 flex-wrap">
+                        <span className={"text-[10px] px-1.5 py-0.5 rounded font-semibold " + catCls}>{catLabel}</span>
+                        <span className="text-[10px] text-gray-500 truncate">{u.detectedFrom}</span>
+                      </div>
+                      {isPromotePrecedent && (
+                        <div className="text-[10px] text-green-700 mb-2 italic">
+                          First authorization recorded for this payer. Promoting saves preauth delay for future patients.
+                          See Floyd's email for context.
+                        </div>
+                      )}
+                      {isReverification && (
+                        <div className="text-[10px] text-purple-700 mb-2 italic">
+                          Rejection happened despite favorable history. Most likely patient-specific — read Floyd's email
+                          before deciding. Default action is keep current classification.
+                        </div>
+                      )}
+                      <div className="flex gap-1">
+                        {/* Action button layout depends on entry type */}
+                        {!isConflict && (
+                          <>
+                            <button onClick={function(){resolvePayerUpdate(u.updateId, "approved")}}
+                              className="flex-1 py-1 bg-green-600 text-white text-xs rounded font-medium">✓ Approve</button>
+                            <button onClick={function(){resolvePayerUpdate(u.updateId, "rejected")}}
+                              className="flex-1 py-1 bg-gray-200 text-gray-700 text-xs rounded font-medium">Reject</button>
+                          </>
+                        )}
+                        {isPromotePrecedent && (
+                          <>
+                            <button onClick={function(){resolvePayerUpdate(u.updateId, "approved")}}
+                              className="flex-1 py-1 bg-green-600 text-white text-xs rounded font-medium">Promote to auto-approved</button>
+                            <button onClick={function(){resolvePayerUpdate(u.updateId, "rejected")}}
+                              className="flex-1 py-1 bg-gray-200 text-gray-700 text-xs rounded font-medium">Not yet</button>
+                          </>
+                        )}
+                        {isReverification && (
+                          <>
+                            {/* Primary action is KEEP CURRENT — most rejections are patient-specific */}
+                            <button onClick={function(){resolvePayerUpdate(u.updateId, "rejected")}}
+                              className="flex-1 py-1 bg-blue-600 text-white text-xs rounded font-medium">Keep current</button>
+                            <button onClick={function(){resolvePayerUpdate(u.updateId, "approved")}}
+                              className="flex-1 py-1 bg-amber-600 text-white text-xs rounded font-medium">Downgrade</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2612,10 +2852,10 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     var hasContra = Array.isArray(p.contraindications) && p.contraindications.length > 0;
                     var payerTier = item.payerTier || { tier: "neutral", reason: "" };
                     var formatWarnings = item.formatWarnings || [];
-                    // Color precedence: error > contra (red) > payer red > payer yellow > payer green > neutral
+                    // Color precedence: error > contra (PURPLE) > payer red > yellow > green > neutral
                     var cardBorder = item.status === "error" ? "border-red-300 bg-red-50"
                       : item.status === "parsing" ? "border-gray-200 bg-gray-50"
-                      : hasContra ? "border-red-400 bg-red-50"
+                      : hasContra ? "border-purple-500 bg-purple-50"
                       : payerTier.tier === "red" ? "border-red-400 bg-red-50"
                       : payerTier.tier === "yellow" ? "border-amber-400 bg-amber-50"
                       : payerTier.tier === "green" ? "border-green-300 bg-green-50"
@@ -2637,7 +2877,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                         {item.status === "parsed" && (
                           <div>
                             {hasContra && (
-                              <div className="text-xs font-bold text-red-700 mb-1">‼ NEEDS SPECIALIST CLEARANCE: {p.contraindications.join(", ")}</div>
+                              <div className="text-xs font-bold text-purple-800 mb-1">🟣 CONTRAINDICATION — physician review: {p.contraindications.join(", ")}</div>
                             )}
                             {payerTier.tier === "red" && !hasContra && (
                               <div className="text-xs font-bold text-red-700 mb-1">‼ NOT YET APPROVED: {payerTier.reason}</div>
@@ -2749,19 +2989,45 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               var isStale = days >= 2 && !ref.called && !c.hasContra && c.payerTier.tier !== "red";
               var statusColor = ref.status === "Complete" ? "text-green-600" :
                 ref.status === "Intake Complete" ? "text-blue-600" :
-                (c.hasContra || c.payerTier.tier === "red") ? "text-red-700" :
+                (c.hasContra) ? "text-purple-700" :
+                (c.payerTier.tier === "red") ? "text-red-700" :
                 isStale ? "text-orange-600" : "text-gray-500";
-              // Color precedence: contra (red) > red payer > yellow payer > green payer > neutral
-              var cardClass = c.hasContra ? "border-red-400 bg-red-50"
+              // Color precedence (top to bottom, first match wins):
+              //   contraindication → PURPLE (clinical, physician judgment)
+              //   red payer        → red (billing/coverage)
+              //   yellow payer     → yellow
+              //   green payer      → green
+              //   default          → neutral
+              // Purple is distinct from red because the concern is medical
+              // (anticoagulation, pacemaker, etc.), not billing-related.
+              // Treating both as red was conflating "needs MD review" with
+              // "preauth will be denied" — different problems, different owners.
+              var cardClass = c.hasContra ? "border-purple-500 bg-purple-50"
                 : c.payerTier.tier === "red" ? "border-red-400 bg-red-50"
                 : c.payerTier.tier === "yellow" ? "border-amber-400 bg-amber-50"
                 : c.payerTier.tier === "green" ? "border-green-300 bg-green-50"
                 : "border-gray-200 bg-white";
+              // Payer category badge from accumulated Payer Reference table
+              // (separate from the heuristic green/yellow/red tier above).
+              // Shows verified institutional knowledge: "Auto-approve" /
+              // "Preauth needed" / "Not covered" / "Unknown — verify".
+              var payerCat = (ref.payerLookup && ref.payerLookup.category) || "unknown-needs-verification";
+              var payerBadge = null;
+              if (payerCat === "auto-approved") {
+                payerBadge = { text: "⚡ Auto-approve", cls: "bg-green-100 text-green-800" };
+              } else if (payerCat === "preauth-required") {
+                payerBadge = { text: "🔍 Preauth needed", cls: "bg-amber-100 text-amber-800" };
+              } else if (payerCat === "not-covered") {
+                payerBadge = { text: "❌ Not covered", cls: "bg-red-100 text-red-800" };
+              } else {
+                payerBadge = { text: "❓ Verify payer", cls: "bg-gray-100 text-gray-700" };
+              }
+              var verifiedDate = (ref.payerLookup && ref.payerLookup.lastVerified) || "";
               return (
                 <div key={idx} className={"rounded border p-3 space-y-1 " + cardClass}>
                   {c.hasContra && (
-                    <div className="bg-red-200 text-red-900 rounded px-2 py-1 text-xs font-bold mb-1">
-                      ‼ NEEDS SPECIALIST CLEARANCE: {c.contraText}
+                    <div className="bg-purple-200 text-purple-900 rounded px-2 py-1 text-xs font-bold mb-1">
+                      🟣 CONTRAINDICATION — physician review: {c.contraText}
                     </div>
                   )}
                   {!c.hasContra && c.payerTier.tier === "red" && (
@@ -2779,8 +3045,33 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                         <span className="text-xs bg-green-200 text-green-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">✓ Medicare</span>
                       )}
                     </div>
-                    <div className={"text-xs font-medium ml-2 " + statusColor}>{ref.status || "New"}</div>
+                    {/* Status display with non-canonical indicator. The "?"
+                        chip means status doesn't match any known taxonomy
+                        value — usually a legacy/relic status that needs human
+                        cleanup. Tap-and-hold (or hover on desktop) shows
+                        what's expected. We don't auto-rewrite; we surface. */}
+                    <div className="flex items-center gap-1 ml-2">
+                      {!isCanonicalStatus(ref.status) && (
+                        <span title="Non-canonical status — needs human review or update"
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-200 text-yellow-900 font-bold">?</span>
+                      )}
+                      <div className={"text-xs font-medium " + statusColor}>{ref.status || "New"}</div>
+                    </div>
                   </div>
+                  {/* Payer category badge — shows what we KNOW about this
+                      payer from accumulated Floyd verifications. Distinct
+                      from the heuristic green/yellow/red tier (which is a
+                      first-glance guess). When both appear, the badge is
+                      the more reliable signal. */}
+                  {ref.insurancePrimary && (
+                    <div className="flex items-center gap-2 flex-wrap text-xs">
+                      <span className={"px-1.5 py-0.5 rounded font-semibold " + payerBadge.cls}>{payerBadge.text}</span>
+                      <span className="text-gray-500 truncate">{ref.insurancePrimary}</span>
+                      {verifiedDate && (
+                        <span className="text-gray-400 text-[10px]">verified {verifiedDate}</span>
+                      )}
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <div className="text-xs text-gray-500">{ref.provider ? "Ref: " + ref.provider : ""}{ref.phone ? " | " + ref.phone : ""}</div>
                     <div className={"text-xs " + (isStale ? "text-orange-600 font-bold" : "text-gray-400")}>{days > 0 ? days + "d ago" : "Today"}</div>
@@ -4181,6 +4472,89 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               <button onClick={sigClear} className="flex-1 py-2 bg-gray-200 text-gray-700 rounded text-sm font-medium">Clear</button>
               <button onClick={sigSave} className="flex-1 py-2 bg-blue-600 text-white rounded text-sm font-medium">Save Signature</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bug report / feature suggestion footer.
+          Lives at the bottom of every screen so it's discoverable but not
+          intrusive. Pre-fills a structured email so reports come in with the
+          context I need (what they were doing, what happened, screenshot).
+          Goes to evan@leitneranesthesia.com (Workspace, BAA-covered) because
+          screenshots may include PHI — must NOT be sent to a non-BAA mailbox.
+
+          The "How to screenshot" link expands to platform-specific instructions
+          covering iPhone, Android, Mac, Windows. Auto-detects platform from
+          user agent and bolds the most-likely option, but shows all so the
+          user can pick if detection is wrong (e.g., iPad Safari is detected
+          as desktop Mac on some iPad versions). */}
+      <BugReportFooter />
+    </div>
+  );
+}
+
+// Compact footer rendered at the bottom of the app shell. Self-contained so
+// the surrounding App() function isn't cluttered with another expand/collapse
+// state hook + platform detection logic.
+function BugReportFooter() {
+  const [showHelp, setShowHelp] = useState(false);
+
+  // Detect platform from navigator.userAgent. This is best-effort — modern
+  // user agents are imprecise (iPad Safari can claim to be Mac, etc.) so we
+  // show all platforms regardless and just bold the detected one.
+  var ua = (typeof navigator !== "undefined" && navigator.userAgent) ? navigator.userAgent : "";
+  var detected = "unknown";
+  if (/iPhone|iPod/.test(ua)) detected = "iphone";
+  else if (/iPad/.test(ua) || (ua.indexOf("Macintosh") !== -1 && typeof navigator !== "undefined" && navigator.maxTouchPoints > 1)) detected = "ipad";
+  else if (/Android/.test(ua)) detected = "android";
+  else if (/Mac/.test(ua)) detected = "mac";
+  else if (/Windows/.test(ua)) detected = "windows";
+
+  // Pre-filled email body. Asks for the four things that turn a "broken!"
+  // report into something actually fixable: what they did, what happened,
+  // what they expected, and a screenshot. The %0A characters are URL-encoded
+  // newlines for mailto: links.
+  var subject = "DNC App: ";
+  var body =
+    "What I was doing:%0A%0A%0A" +
+    "What happened:%0A%0A%0A" +
+    "What I expected to happen:%0A%0A%0A" +
+    "(Please attach a screenshot.)%0A%0A" +
+    "---%0A" +
+    "App version: " + (window.__APP_VERSION || "unknown") + "%0A" +
+    "Device: " + (typeof navigator !== "undefined" ? navigator.userAgent.substring(0, 100) : "unknown");
+
+  var mailto = "mailto:evan@leitneranesthesia.com?subject=" + encodeURIComponent(subject) + "&body=" + body;
+
+  return (
+    <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 text-center text-xs text-gray-500 mt-8">
+      <div>
+        Found a bug or have an idea?{" "}
+        <a href={mailto} className="text-blue-600 underline">Email Evan</a>
+        {" · "}
+        <button onClick={function(){setShowHelp(!showHelp)}} className="text-blue-600 underline">
+          {showHelp ? "Hide" : "How to screenshot"}
+        </button>
+      </div>
+      {showHelp && (
+        <div className="mt-2 text-left max-w-md mx-auto bg-white border border-gray-200 rounded p-3 space-y-1">
+          <div className={detected === "iphone" ? "font-semibold text-gray-800" : "text-gray-600"}>
+            <span className="font-medium">iPhone:</span> Side button + Volume Up (press together briefly)
+          </div>
+          <div className={detected === "ipad" ? "font-semibold text-gray-800" : "text-gray-600"}>
+            <span className="font-medium">iPad:</span> Top button + Volume Up (or Home button + Top on older iPads)
+          </div>
+          <div className={detected === "android" ? "font-semibold text-gray-800" : "text-gray-600"}>
+            <span className="font-medium">Android:</span> Power + Volume Down (press together)
+          </div>
+          <div className={detected === "mac" ? "font-semibold text-gray-800" : "text-gray-600"}>
+            <span className="font-medium">Mac:</span> Cmd + Shift + 4 (drag to select area)
+          </div>
+          <div className={detected === "windows" ? "font-semibold text-gray-800" : "text-gray-600"}>
+            <span className="font-medium">Windows:</span> Windows + Shift + S (drag to select area)
+          </div>
+          <div className="text-gray-400 text-[10px] mt-2 pt-2 border-t border-gray-100">
+            Screenshots save to your Photos / Pictures. Attach to the email when you write to Evan.
           </div>
         </div>
       )}
