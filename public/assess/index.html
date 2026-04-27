@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-24-14";
+window.__APP_VERSION = "2026-04-24-16";
 
 (function initCacheBust() {
   try {
@@ -572,6 +572,17 @@ function App() {
   const [pendingPayerUpdates, setPendingPayerUpdates] = useState([]);
   const [pendingPayerLoading, setPendingPayerLoading] = useState(false);
 
+  // User profile editor state. Loaded from backend when settings opens; saved
+  // explicitly via Save Profile button. Signature pad is its own canvas
+  // (separate from the consent sigPad) — when user draws here and saves, the
+  // PNG goes to SIGNATURES_FOLDER_ID and the URL is stored on their Users row.
+  // Without this, cosign appends caption text but no signature image — silent
+  // breakage that took 6 weeks to notice.
+  const [userProfile, setUserProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSigDrawing, setProfileSigDrawing] = useState(false);
+  const [profileSigDirty, setProfileSigDirty] = useState(false); // true once user has drawn anything
+
   // Cosign queue — documents awaiting this user's signature.
   // Fetched from backend's listCosignQueue endpoint, filtered by logged-in email.
   // Each item: {cosignId, docType, docName, docUrl, docId, patientId,
@@ -838,8 +849,173 @@ function App() {
   useEffect(function() {
     if (showConfig) {
       loadPendingPayerUpdates();
+      loadUserProfile();
     }
   }, [showConfig]);
+
+  // Load profile once at app start (not just when settings opens). Consent
+  // flow needs the signature data URL to auto-fill witness sig — without
+  // this, opening a consent before ever opening settings would have no
+  // profile data and force the user to sign manually anyway.
+  useEffect(function() {
+    if (sheetUrl && !userProfile) loadUserProfile();
+  }, [sheetUrl]);
+
+  // Load the current user's profile from the Users sheet. Populates the
+  // profile editor with their name, credentials, role, locations, and existing
+  // signature URL. Failure is silent — if backend is unreachable, user just
+  // sees a fresh form and can fill it from scratch.
+  async function loadUserProfile() {
+    if (!sheetUrl) return;
+    var email = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+      ? firebase.auth().currentUser.email : "";
+    if (!email) return;
+    setProfileLoading(true);
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "getUserProfile", email: email })
+      });
+      var result = await resp.json();
+      if (result.status === "ok" && result.profile) {
+        setUserProfile({
+          email: result.profile.email,
+          displayName: result.profile.displayName || "",
+          credentials: result.profile.credentials || "",
+          role: result.profile.role || "",
+          locations: Array.isArray(result.profile.locations) ? result.profile.locations.join(",") : "",
+          licensedStates: Array.isArray(result.profile.licensedStates) ? result.profile.licensedStates.join(",") : "",
+          signatureUrl: result.profile.signatureUrl || "",
+          signatureDataUrl: result.profile.signatureDataUrl || ""  // base64 data URL for client-side reuse (consent witness auto-fill)
+        });
+      } else {
+        // No row yet — initialize blank profile so the user can populate it
+        setUserProfile({
+          email: email, displayName: "", credentials: "",
+          role: "", locations: "", licensedStates: "", signatureUrl: ""
+        });
+      }
+      setProfileSigDirty(false);
+    } catch(e) {
+      console.error("loadUserProfile failed:", e);
+      // Even on error, seed an empty profile so the editor renders. This is
+      // critical for the "I just need to re-save my signature" workflow —
+      // without this, a backend hiccup would hide the only UI a user has to
+      // refresh their signature, breaking cosign indefinitely.
+      var fallbackEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+        ? firebase.auth().currentUser.email : "";
+      if (fallbackEmail) {
+        setUserProfile({
+          email: fallbackEmail, displayName: "", credentials: "",
+          role: "", locations: "", licensedStates: "", signatureUrl: ""
+        });
+      }
+    }
+    setProfileLoading(false);
+  }
+
+  // Save the user's profile back to the Users sheet. If the user drew a new
+  // signature on the canvas (profileSigDirty=true), the canvas is exported as
+  // PNG base64 and sent along with the profile fields. Backend writes the PNG
+  // to SIGNATURES_FOLDER_ID and stores the resulting URL in the user's row.
+  async function saveUserProfile() {
+    if (!sheetUrl || !userProfile) return;
+    if (!userProfile.email) { flash("Missing email", "err"); return; }
+
+    // Capture signature image only if user actually drew something new. If
+    // they didn't touch the canvas, leave the existing signatureUrl alone.
+    var signatureImage = null;
+    if (profileSigDirty) {
+      var canvas = document.getElementById("profile-sig-canvas");
+      if (canvas) {
+        try { signatureImage = canvas.toDataURL("image/png"); } catch(e) {
+          flash("Signature export failed: " + e, "err"); return;
+        }
+      }
+    }
+
+    var locationsArr = String(userProfile.locations || "").split(",").map(function(s){return s.trim()}).filter(Boolean);
+    var statesArr = String(userProfile.licensedStates || "").split(",").map(function(s){return s.trim()}).filter(Boolean);
+
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          _action: "saveUserProfile",
+          email: userProfile.email,
+          displayName: userProfile.displayName,
+          credentials: userProfile.credentials,
+          role: userProfile.role,
+          locations: locationsArr,
+          licensedStates: statesArr,
+          signatureUrl: userProfile.signatureUrl,  // preserved if no new image
+          signatureImage: signatureImage
+        })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        flash("Profile saved" + (signatureImage ? " (signature updated)" : ""), "ok");
+        setProfileSigDirty(false);
+        // Re-pull to get the new signatureUrl
+        loadUserProfile();
+      } else {
+        flash("Save failed: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) {
+      flash("Save error: " + e.toString(), "err");
+    }
+  }
+
+  // Profile signature pad handlers — separate from consent sigPad (sigStart/
+  // sigMove/sigEnd) so the two canvases don't collide. The profile canvas is
+  // referenced by id "profile-sig-canvas" in the settings panel below.
+  function profileSigGetCtx() {
+    var c = document.getElementById("profile-sig-canvas");
+    return c ? c.getContext("2d") : null;
+  }
+  function profileSigPos(e) {
+    var c = document.getElementById("profile-sig-canvas");
+    if (!c) return { x: 0, y: 0 };
+    var r = c.getBoundingClientRect();
+    var t = e.touches && e.touches[0] ? e.touches[0] : e;
+    return {
+      x: (t.clientX - r.left) * (c.width / r.width),
+      y: (t.clientY - r.top) * (c.height / r.height)
+    };
+  }
+  function profileSigStart(e) {
+    e.preventDefault();
+    var ctx = profileSigGetCtx();
+    if (!ctx) return;
+    setProfileSigDrawing(true);
+    setProfileSigDirty(true);
+    var p = profileSigPos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#000";
+  }
+  function profileSigMove(e) {
+    if (!profileSigDrawing) return;
+    e.preventDefault();
+    var ctx = profileSigGetCtx();
+    if (!ctx) return;
+    var p = profileSigPos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+  function profileSigEnd(e) {
+    if (e) e.preventDefault();
+    setProfileSigDrawing(false);
+  }
+  function profileSigClear() {
+    var c = document.getElementById("profile-sig-canvas");
+    if (!c) return;
+    var ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, c.width, c.height);
+    setProfileSigDirty(true); // clearing counts as a change — empty signature replaces old one
+  }
 
   async function addReferral(forceAdd, source) {
     // source: undefined = form path (uses newRef), or {queueId} = queue path
@@ -1909,7 +2085,7 @@ function App() {
     var sexWord = form.sex === "M" ? "male" : form.sex === "F" ? "female" : "patient";
     var pmhxList = form.pmhx.length ? form.pmhx.join(", ") : "None";
     return "Patient Name: " + (patientName || "[Name]") + "\n" +
-"DOB: [DOB]\n" +
+"DOB: " + (form.dob || "[DOB]") + "\n" +
 "Visit Date: " + form.date + "\n" +
 "Provider: Dr. Lindsey A. Nelson\n" +
 "Referring Physician: " + (form.referringProvider || "[Provider]") + "\n\n" +
@@ -2681,6 +2857,113 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             <input className={ic} value={sheetUrl} onChange={function(e){setSheetUrl(e.target.value)}} placeholder="https://script.google.com/macros/s/.../exec" />
             <button onClick={saveSheetUrl} className="mt-2 px-3 py-1 bg-yellow-500 text-white text-xs rounded">Save URL</button>
           </div>
+
+          {/* User profile editor — name, credentials, role, sites, and the
+              all-important signature pad. Cosign appends this signature image
+              to docs; without it, only caption text appears. Re-saving here
+              after a Workspace migration also fixes signatures that became
+              inaccessible to the new Apps Script identity.
+              Always renders when settings is open — even if the profile load
+              is in flight or failed. The user can fill from scratch as a
+              fallback. The previous `{userProfile && ...}` gate hid the whole
+              section when load failed, leaving no way to re-save signatures
+              and creating a chicken-and-egg cosign breakage. */}
+          <div className="border-t border-yellow-300 pt-3">
+            <div className="text-xs font-semibold text-gray-600 mb-2">YOUR PROFILE</div>
+            {profileLoading && <div className="text-xs text-gray-400 mb-2">Loading…</div>}
+            {!userProfile && !profileLoading && (
+              <div className="text-xs text-amber-700 mb-2">
+                Couldn't load your saved profile. You can still fill in below to save a fresh one.
+                <button onClick={loadUserProfile}
+                  className="ml-2 px-2 py-0.5 bg-amber-200 text-amber-900 rounded text-[10px]">Retry</button>
+              </div>
+            )}
+            {userProfile && (
+              <div className="space-y-2">
+                <div>
+                  <label className={lc}>Email</label>
+                  <input className={ic + " bg-gray-100"} value={userProfile.email} readOnly />
+                </div>
+                <div>
+                  <label className={lc}>Display name</label>
+                  <input className={ic} value={userProfile.displayName}
+                    onChange={function(e){setUserProfile(Object.assign({}, userProfile, {displayName: e.target.value}))}} />
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className={lc}>Credentials</label>
+                    <input className={ic} value={userProfile.credentials}
+                      placeholder="MD, DO, NP, PA, RN, etc."
+                      onChange={function(e){setUserProfile(Object.assign({}, userProfile, {credentials: e.target.value}))}} />
+                  </div>
+                  <div className="flex-1">
+                    <label className={lc}>Role</label>
+                    <select className={ic} value={userProfile.role}
+                      onChange={function(e){setUserProfile(Object.assign({}, userProfile, {role: e.target.value}))}}>
+                      <option value="">— select —</option>
+                      <option value="physician">physician</option>
+                      <option value="crna">crna</option>
+                      <option value="ma">ma</option>
+                      <option value="biller">biller</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className={lc}>Sites (comma-separated, e.g. LEWES,SALISBURY)</label>
+                  <input className={ic} value={userProfile.locations}
+                    onChange={function(e){setUserProfile(Object.assign({}, userProfile, {locations: e.target.value}))}} />
+                </div>
+                <div>
+                  <label className={lc}>Licensed states (comma-separated, e.g. DE,MD,VA)</label>
+                  <input className={ic} value={userProfile.licensedStates}
+                    onChange={function(e){setUserProfile(Object.assign({}, userProfile, {licensedStates: e.target.value}))}} />
+                </div>
+
+                {/* Signature pad. Existing signature shown above the canvas if
+                    one is on file. Drawing in the canvas marks profileSigDirty
+                    so save sends the new image; not drawing leaves the
+                    existing signatureUrl alone. */}
+                <div className="border-t border-gray-200 pt-2">
+                  <label className={lc}>Signature</label>
+                  {userProfile.signatureUrl && !profileSigDirty && (
+                    <div className="text-[10px] text-gray-500 mb-1">
+                      ✓ Signature on file. Draw below to replace it.
+                    </div>
+                  )}
+                  {!userProfile.signatureUrl && (
+                    <div className="text-[10px] text-amber-700 mb-1">
+                      ⚠ No signature on file. Cosigns will go through without an image.
+                    </div>
+                  )}
+                  <canvas
+                    id="profile-sig-canvas"
+                    width="600"
+                    height="200"
+                    className="w-full border-2 border-gray-300 rounded bg-white"
+                    style={{touchAction: "none"}}
+                    onMouseDown={profileSigStart}
+                    onMouseMove={profileSigMove}
+                    onMouseUp={profileSigEnd}
+                    onMouseLeave={profileSigEnd}
+                    onTouchStart={profileSigStart}
+                    onTouchMove={profileSigMove}
+                    onTouchEnd={profileSigEnd}
+                  />
+                  <div className="flex gap-2 mt-1">
+                    <button onClick={profileSigClear}
+                      className="flex-1 py-1 bg-gray-200 text-gray-700 text-xs rounded">Clear pad</button>
+                  </div>
+                </div>
+
+                <button onClick={saveUserProfile}
+                  className="w-full mt-2 py-2 bg-blue-600 text-white text-sm rounded font-medium">
+                  Save Profile{profileSigDirty ? " + Signature" : ""}
+                </button>
+              </div>
+            )}
+          </div>
+
           <div className="border-t border-yellow-300 pt-3">
             <div className="text-xs font-semibold text-gray-600 mb-2">PATIENT DIRECTORY (local only, never exported)</div>
             <div className="flex gap-1 mb-2">
@@ -3332,7 +3615,24 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 var existing = photos.find(function(p){return p.patientId === form.patientId && p.type === c.photoType});
                 var signed = !!existing;
                 return (
-                  <button key={c.key} onClick={function(){setCurrentConsent(c.key); setScrolledToBottom(false); setConsentSigs({patient:null,witness:null,witnessName:""});}}
+                  <button key={c.key} onClick={function(){
+                    setCurrentConsent(c.key);
+                    setScrolledToBottom(false);
+                    // Pre-fill witness identity from logged-in user's profile.
+                    // Per Evan's call: auto-fill BOTH name and signature so
+                    // the witness can confirm with a single tap rather than
+                    // re-typing and re-drawing on every consent. Convention
+                    // matches how digital EHR signatures (Cerner, Epic) work
+                    // — authenticate once, clicks become signature.
+                    var prefillName = "";
+                    var prefillSig = null;
+                    if (userProfile) {
+                      prefillName = userProfile.displayName || "";
+                      if (userProfile.credentials) prefillName += ", " + userProfile.credentials;
+                      prefillSig = userProfile.signatureDataUrl || null;
+                    }
+                    setConsentSigs({patient:null, witness: prefillSig, witnessName: prefillName});
+                  }}
                     className={"w-full text-left p-4 rounded-lg border-2 " + (signed ? "bg-green-50 border-green-300" : "bg-white border-gray-200")}>
                     <div className="flex items-center justify-between">
                       <div className="font-medium text-gray-800">{c.title}</div>
@@ -3423,6 +3723,9 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   {consentSigs.witness && (
                     <img src={consentSigs.witness} className="w-full h-24 object-contain bg-white border border-gray-200 rounded mb-2" alt="Witness signature" />
                   )}
+                  {/* When witness sig was auto-filled from profile, the user
+                      can re-sign manually if they want — this is the override
+                      path. Most days it'll just be confirm-and-go. */}
                   <button
                     onClick={function(){
                       if (!consentSigs.witnessName.trim()) { flash("Enter witness name first", "err"); return; }
@@ -3441,7 +3744,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       }, 50);
                     }}
                     className="w-full py-2 rounded text-sm font-medium bg-blue-600 text-white">
-                    {consentSigs.witness ? "Re-sign" : "Tap to sign"}
+                    {consentSigs.witness ? "Re-sign manually" : "Tap to sign"}
                   </button>
                 </div>
 
