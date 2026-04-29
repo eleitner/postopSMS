@@ -36,7 +36,42 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-24-16";
+window.__APP_VERSION = "2026-04-29-defensible";
+
+// ============================================================
+// MAINTENANCE REDIRECT
+// While MAINTENANCE_MODE is true, every visitor is redirected to
+// diabeticnerveclinic.com BEFORE the app boots. The redirect runs in this
+// plain <script> block — earlier than the babel-compiled app — so non-admin
+// visitors never download or render any of the React code below.
+//
+// Admin bypass: visit URL with ?admin=1 (e.g. surghome.com/assess?admin=1).
+// Bypass persists in sessionStorage for the tab — page refresh keeps you in,
+// closing the tab/Safari clears it. Bookmark the ?admin=1 version on your
+// home screen and you'll always land in.
+//
+// To re-enable the app for all users:
+//   1. Set window.__MAINTENANCE_MODE = false below
+//   2. Bump APP_VERSION above so the foreground re-check forces a refresh
+//   3. Redeploy
+// ============================================================
+window.__MAINTENANCE_MODE = true;
+window.__MAINTENANCE_REDIRECT_URL = "https://diabeticnerveclinic.com";
+
+(function checkMaintenance() {
+  if (!window.__MAINTENANCE_MODE) return;
+  try {
+    if (window.location.search.indexOf("admin=1") !== -1) {
+      sessionStorage.setItem("dnc-admin-bypass", "1");
+      return; // bypass active, let app load
+    }
+    if (sessionStorage.getItem("dnc-admin-bypass") === "1") return;
+    window.location.replace(window.__MAINTENANCE_REDIRECT_URL);
+  } catch(e) {
+    // sessionStorage blocked? Redirect anyway — safer to be off than on.
+    window.location.replace(window.__MAINTENANCE_REDIRECT_URL);
+  }
+})();
 
 (function initCacheBust() {
   try {
@@ -2169,17 +2204,21 @@ dxExtras + "\n" +
 "  2. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Vagus nerve\n" +
 "  3. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Trigeminal nerve\n" +
 "  4. Intraoperative electrical analysis and generator reprogramming of trial peripheral and cranial neurostimulator electrode systems.\n\n" +
+// TODO (multi-clinician): swap hardcoded provider name for templated
+// userProfile.displayName + credentials when other physicians come on.
+// Same change needed in generateHnP() and generateLOMN() and the bottom
+// signature line below.
 "Provider: Lindsey A. Nelson, MD\n" +
 "Anesthesia: Topical Anesthetic\n" +
 "Complications: None.\n\n" +
 (form.procedureDaySubjective ? "Day of Procedure Subjective:\n" + form.procedureDaySubjective + "\n\n" : "") +
 "Operative Note:\n" +
-"This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a class 2 low to moderate risk device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at a power of 200 for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
-"After standard of care informed consent was performed and obtained, including but not limited to a review of all potential treatment alternatives and options, the patient agreed and requested to proceed accepting all known and unknown procedural (and anesthesia) risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
-"First, the implanted neurostimulator was pre-programmed to target the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. Device parameters were set to operate at approximately 325-350 Ohms and 9.12 Hz, the manufacturer-specified range for this neural target. The platinum iridium electrode was implanted within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
-"Second, the implanted neurostimulator was pre-programmed to target the distal C2 spinal nerve root lesser occipital branch nerve. Device parameters were set to operate at approximately 350-360 Ohms and 36.48 Hz, the manufacturer-specified range for this neural target. The second platinum iridium electrode was implanted at the posterior mid helix - mid concha, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
-"Third, the implanted neurostimulator was pre-programmed to target the auricular branch of the vagus cranial nerve. Device parameters were set to operate at approximately 400 Ohms and 72.96 Hz, the manufacturer-specified range for this neural target. The third platinum iridium electrode was implanted at the inferomedial antitragus, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
-"After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post procedure until meeting stable discharge criteria and discharged without complication - given complete postoperative and followup instructions.\n\n" +
+"This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a Class II (low-to-moderate risk) device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at the manufacturer-specified intensity setting of 200 (per device IFU) for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
+"After standard-of-care informed consent was performed, documented on the signed consent form attached to this record, and obtained — including but not limited to a review of all potential treatment alternatives and options — the patient agreed and requested to proceed, accepting all known and unknown procedural risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
+"First, the implanted neurostimulator was pre-programmed to target the distal branch of the auriculotemporal branch of the third division (V3, mandibular) of the trigeminal cranial nerve. Device parameters were set to operate at approximately 325-350 Ohms and 9.12 Hz, the manufacturer-specified range for this neural target. The platinum iridium electrode was implanted within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
+"Second, the implanted neurostimulator was pre-programmed to target the distal C2 spinal nerve root lesser occipital branch nerve. Device parameters were set to operate at approximately 350-360 Ohms and 36.48 Hz, the manufacturer-specified range for this neural target. The second platinum iridium electrode was implanted at the posterior mid helix - mid concha. The device's closed-loop impedance feedback was used to confirm placement within the manufacturer-specified operating range for this target.\n\n" +
+"Third, the implanted neurostimulator was pre-programmed to target the auricular branch of the vagus cranial nerve. Device parameters were set to operate at approximately 400 Ohms and 72.96 Hz, the manufacturer-specified range for this neural target. The third platinum iridium electrode was implanted at the inferomedial antitragus. Electrode localization was confirmed within the device's specified operating range via closed-loop impedance feedback.\n\n" +
+"After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post-procedure until meeting standard ambulatory discharge criteria — alert and oriented, hemostasis at all electrode sites, no dizziness or syncopal symptoms, ambulatory at baseline, accompanied by a responsible adult — and was discharged without complication, having been given complete postoperative and follow-up instructions.\n\n" +
 "Specific Follow-up: Instructions given to patient for management and care of the dressing." +
 (form.deviceNotes ? "\n\nDevice: " + form.deviceNotes : "") + "\n\n" +
 "Lindsey A. Nelson, MD\n" +
@@ -2238,17 +2277,21 @@ dxExtras + "\n" +
 "  2. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Vagus nerve\n" +
 "  3. Implantation of Trial Cranial Peripheral Neurostimulator of the " + sideLower + " Trigeminal nerve\n" +
 "  4. Intraoperative electrical analysis and generator reprogramming of trial peripheral and cranial neurostimulator electrode systems.\n\n" +
+// TODO (multi-clinician): swap hardcoded provider name for templated
+// userProfile.displayName + credentials when other physicians come on.
+// Same change needed in generateHnP() and generateLOMN() and the bottom
+// signature line below.
 "Provider: Lindsey A. Nelson, MD\n" +
 "Anesthesia: Topical Anesthetic\n" +
 "Complications: None.\n\n" +
 (form.procedureDaySubjective ? "Day of Procedure Subjective:\n" + form.procedureDaySubjective + "\n\n" : "") +
 "Operative Note:\n" +
-"This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a class 2 low to moderate risk device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at a power of 200 for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
-"After standard of care informed consent was performed and obtained, including but not limited to a review of all potential treatment alternatives and options, the patient agreed and requested to proceed accepting all known and unknown procedural (and anesthesia) risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
-"First, the implanted neurostimulator was pre-programmed to target the distal branch of the auricular temporal branch of the third division of the trigeminal cranial nerve. Device parameters were set to operate at approximately 325-350 Ohms and 9.12 Hz, the manufacturer-specified range for this neural target. The platinum iridium electrode was implanted within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
-"Second, the implanted neurostimulator was pre-programmed to target the distal C2 spinal nerve root lesser occipital branch nerve. Device parameters were set to operate at approximately 350-360 Ohms and 36.48 Hz, the manufacturer-specified range for this neural target. The second platinum iridium electrode was implanted at the posterior mid helix - mid concha, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
-"Third, the implanted neurostimulator was pre-programmed to target the auricular branch of the vagus cranial nerve. Device parameters were set to operate at approximately 400 Ohms and 72.96 Hz, the manufacturer-specified range for this neural target. The third platinum iridium electrode was implanted at the inferomedial antitragus, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
-"After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post procedure until meeting stable discharge criteria and discharged without complication - given complete postoperative and followup instructions.\n\n" +
+"This patient has maximized medical management to the degree they can tolerate or further wishes to pursue without control of their symptoms. Their pain and functionality have been limited to the degree that they can not perform their normal activities of daily living without significant limitation and/or impairment. They have already tried and failed to achieve long lasting symptom control with other therapies for greater than " + (form.painDuration || "3") + " " + form.painDurationUnit.toLowerCase() + " as outlined in the medical record. The patient is seeking alternative treatment and there is no contraindication known at this time to a trial of peripheral nerve stimulation, specifically the implantation of a programmable, modulation (1-100 HZ) differing, inter-pulse, rectangular waveform peripheral nerve stimulator with constant current that is voltage and software controlled. It is a Class II (low-to-moderate risk) device specifically for control of symptoms via the selective stimulation of Cranial Nerves 5, 7, 9, 10 and distal branch spinal nerve roots C1-2-3 as identified by utilizing realtime closed loop impedance drop feedback - the precisely localized and implanted 4 titanium electrode arrays each contain a .0201 cm2 surface area that produces a maximum charge density of 65.67 @ 1K microcoulomb/cm2 and Max Average Power Density (Wcm2) of 0.346 @ 1K ohm. All programming was set for duration of up to 20 days, at a Hz of 1.14 fixed alternating with sweep functions to 100HZ, at the manufacturer-specified intensity setting of 200 (per device IFU) for a cycle of 2 hours on and 2 hours off. Therefore, all require placement, programming, and control under direction of a medical doctor.\n\n" +
+"After standard-of-care informed consent was performed, documented on the signed consent form attached to this record, and obtained — including but not limited to a review of all potential treatment alternatives and options — the patient agreed and requested to proceed, accepting all known and unknown procedural risks, benefits, and outcomes without guarantee (stated or implied) of any kind. Topical anesthetic was placed at the different areas of the ear where anticipated implantation would occur. Preparation and draping of the surgical site was then carried out in the usual sterile fashion on the " + side + " ear taking care to assure continuous sterility of all implantable leads and associated hardware. After sterile prep with 70% alcohol solution, the subdermal implantation of each individual trial electrode was then carried out in a sequential fashion.\n\n" +
+"First, the implanted neurostimulator was pre-programmed to target the distal branch of the auriculotemporal branch of the third division (V3, mandibular) of the trigeminal cranial nerve. Device parameters were set to operate at approximately 325-350 Ohms and 9.12 Hz, the manufacturer-specified range for this neural target. The platinum iridium electrode was implanted within the scapha medial to the helix 2 mm posterior and superior to the triangular fossa, with closed-loop impedance feedback confirming electrode localization within the device's operating range.\n\n" +
+"Second, the implanted neurostimulator was pre-programmed to target the distal C2 spinal nerve root lesser occipital branch nerve. Device parameters were set to operate at approximately 350-360 Ohms and 36.48 Hz, the manufacturer-specified range for this neural target. The second platinum iridium electrode was implanted at the posterior mid helix - mid concha. The device's closed-loop impedance feedback was used to confirm placement within the manufacturer-specified operating range for this target.\n\n" +
+"Third, the implanted neurostimulator was pre-programmed to target the auricular branch of the vagus cranial nerve. Device parameters were set to operate at approximately 400 Ohms and 72.96 Hz, the manufacturer-specified range for this neural target. The third platinum iridium electrode was implanted at the inferomedial antitragus. Electrode localization was confirmed within the device's specified operating range via closed-loop impedance feedback.\n\n" +
+"After the above had been completed, and hemostasis assured, all electrodes were secured and op dressing applied, and appropriate grounding of the neurostimulator circuitry finalized. The external battery source was then in turn connected and secured posteriorly with an insulated dressing in order to keep it stable and dry. After the above was completed, the patient was monitored post-procedure until meeting standard ambulatory discharge criteria — alert and oriented, hemostasis at all electrode sites, no dizziness or syncopal symptoms, ambulatory at baseline, accompanied by a responsible adult — and was discharged without complication, having been given complete postoperative and follow-up instructions.\n\n" +
 "Specific Follow-up: Instructions given to patient for management and care of the dressing." +
 (form.deviceNotes ? "\n\nDevice: " + form.deviceNotes : "");
 
@@ -4887,13 +4930,13 @@ const FIREBASE_CONFIG = {
 // then, treat the Users sheet as source of truth and mirror here.
 const ALLOWED_EMAILS = [
   "evan.leitner@gmail.com",
-  "lindseyallannelson@gmail.com",
-  "diabeticnerveclinic@gmail.com",
-  "bradley.burdick@huntington.com",
-  "bradley@diabeticnerveclinic.com",
-  "nicolegeorgi@hotmail.com",
-  "sheilakay111@yahoo.com",
-  "1025asm@gmail.com"
+  //"lindseyallannelson@gmail.com",
+  //"diabeticnerveclinic@gmail.com",
+  //"bradley.burdick@huntington.com",
+  //"bradley@diabeticnerveclinic.com",
+  //"nicolegeorgi@hotmail.com",
+  //"sheilakay111@yahoo.com",
+  //"1025asm@gmail.com"
 ];
 
 // Initialize Firebase only if config is filled in
