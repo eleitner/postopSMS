@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-29-defensible";
+window.__APP_VERSION = "2026-04-29-reopen";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -55,7 +55,7 @@ window.__APP_VERSION = "2026-04-29-defensible";
 //   2. Bump APP_VERSION above so the foreground re-check forces a refresh
 //   3. Redeploy
 // ============================================================
-window.__MAINTENANCE_MODE = true;
+window.__MAINTENANCE_MODE = false;
 window.__MAINTENANCE_REDIRECT_URL = "https://diabeticnerveclinic.com";
 
 (function checkMaintenance() {
@@ -4930,13 +4930,13 @@ const FIREBASE_CONFIG = {
 // then, treat the Users sheet as source of truth and mirror here.
 const ALLOWED_EMAILS = [
   "evan.leitner@gmail.com",
-  //"lindseyallannelson@gmail.com",
-  //"diabeticnerveclinic@gmail.com",
-  //"bradley.burdick@huntington.com",
-  //"bradley@diabeticnerveclinic.com",
-  //"nicolegeorgi@hotmail.com",
-  //"sheilakay111@yahoo.com",
-  //"1025asm@gmail.com"
+  "lindseyallannelson@gmail.com",
+  "diabeticnerveclinic@gmail.com",
+  "bradley.burdick@huntington.com",
+  "bradley@diabeticnerveclinic.com",
+  "nicolegeorgi@hotmail.com",
+  "sheilakay111@yahoo.com",
+  "1025asm@gmail.com"
 ];
 
 // Initialize Firebase only if config is filled in
