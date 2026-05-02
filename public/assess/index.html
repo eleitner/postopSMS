@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-30-leakfix";
+window.__APP_VERSION = "2026-04-30-loadguard";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -1719,6 +1719,18 @@ function App() {
   // and at loadDraft so we don't fire a no-op sync on first autosave.
   const lastReferralSync = useRef({});
 
+  // Tracks the timestamp of the most recent loadDraft completion. Autosave
+  // checks this and suppresses for ~3 seconds after a load — without this,
+  // loading a draft that's missing some fields (e.g. a partial cloud draft
+  // returned without phone-intake fields) causes the form to be populated
+  // with defaultState defaults for the missing fields, then the form-changed
+  // useEffect schedules an autosave 1.5s later that writes those empty
+  // defaults BACK to cloud, destroying any real data that was in those
+  // fields. This bug overwrote a clinician's draft mid-clinic and forced
+  // them to redo the work — fix is to give the load a quiet window before
+  // autosave starts churning again.
+  const justLoadedAt = useRef(0);
+
   // Build the eight correction-eligible fields out of current form + name state.
   function buildReferralCorrectionSnapshot() {
     return {
@@ -1765,6 +1777,14 @@ function App() {
     // but if React batched things weirdly or the fire happened mid-flush,
     // this guard catches it.
     if (scheduledPatientId && scheduledPatientId !== form.patientId) return;
+    // Suppress autosave in the quiet window after a load. Without this, a
+    // partial cloud draft (one missing some intake fields) loads, the form
+    // populates missing fields with defaultState empties, and 1.5s later
+    // the autosave writes those empties back to cloud — destroying the real
+    // data that was in those fields. The 3-second window is long enough
+    // for a load to settle but short enough that legitimate user edits
+    // (typing into a field shortly after load) aren't suppressed for long.
+    if (Date.now() - justLoadedAt.current < 3000) return;
     // Guard: don't overwrite cloud draft with empty form. If the form has no name,
     // no age, no demographics, no clinical content, refuse to save. This prevents
     // data loss when the form is reset (e.g. after submit, after switching patients,
@@ -1856,6 +1876,10 @@ function App() {
         patientName: "", dob: "", phone: "", referringProvider: "",
         insuranceName: "", memberId: "", insuranceName2: "", memberId2: ""
       };
+      // Stamp the load attempt so autosave suppresses for 3 seconds —
+      // otherwise the form-reset above would trigger an immediate autosave
+      // that writes empties to cloud.
+      justLoadedAt.current = Date.now();
       return;
     }
 
@@ -1942,6 +1966,10 @@ function App() {
       // whereas a stale name is an actively misleading display.
       setPatientName("");
     }
+    // Stamp the load time. autoSaveDraft suppresses for 3 seconds after this,
+    // preventing the post-load autosave from writing defaults over real data
+    // for any field that the loaded draft was missing.
+    justLoadedAt.current = Date.now();
     flash("Loaded " + pid);
   }
 
@@ -5106,6 +5134,9 @@ function BugReportFooter() {
         <button onClick={function(){setShowHelp(!showHelp)}} className="text-blue-600 underline">
           {showHelp ? "Hide" : "How to screenshot"}
         </button>
+      </div>
+      <div className="mt-1 text-[10px] text-gray-400 font-mono">
+        v {(typeof window !== "undefined" && window.__APP_VERSION) || "unknown"}
       </div>
       {showHelp && (
         <div className="mt-2 text-left max-w-md mx-auto bg-white border border-gray-200 rounded p-3 space-y-1">
