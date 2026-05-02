@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-29-reopen";
+window.__APP_VERSION = "2026-04-30-leakfix";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -152,7 +152,7 @@ window.addEventListener("visibilitychange", function() {
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 const STORAGE_KEY = "dpn-assessments";
 const DRAFTS_KEY = "dpn-drafts";
@@ -317,6 +317,33 @@ function isValidPhone(s) {
   return digits.length === 10 || digits.length === 11; // 11 = with country code
 }
 
+// Medicare Beneficiary Identifier (MBI) format check. Per CMS, since 2018 every
+// traditional Medicare member has an 11-character MBI (replacing SSN-based HICN).
+// Format positions: C A N N A N A A N N N, where:
+//   C = digit 1-9 (never 0 in position 1)
+//   A = letter, excluding S/L/O/I/B/Z (CMS excluded these — too easily confused
+//       with digits 5/1/0/1/8/2)
+//   N = digit 0-9
+// Strips dashes/whitespace and uppercases before checking, since MBIs are
+// sometimes displayed dashed (e.g. "1AB2-CD3-EF45") even though canonical form
+// is undelimited.
+function isValidMBI(s) {
+  if (!s) return false;
+  var clean = String(s).replace(/[\s-]/g, "").toUpperCase();
+  if (clean.length !== 11) return false;
+  return /^[1-9][AC-HJ-KMNP-RT-Y][0-9]{2}[AC-HJ-KMNP-RT-Y][0-9][AC-HJ-KMNP-RT-Y]{2}[0-9]{3}$/.test(clean);
+}
+
+// Returns true if the insurance name indicates TRADITIONAL Medicare (Part A/B/D),
+// NOT Medicare Advantage. Same disambiguation logic classifyPayer uses for
+// tiering — kept consistent so a payer that triggers MBI validation here is
+// the same set of payers tagged "green" in the existing tier display.
+function isMedicareTraditional(insuranceName) {
+  if (!insuranceName) return false;
+  var p = String(insuranceName).toLowerCase();
+  return /\bmedicare\b/.test(p) && !/advantage|ma\s*plan|hmo|ppo/.test(p);
+}
+
 // Normalize phone for comparison: digits only, last 10
 function normalizePhone(s) {
   if (!s) return "";
@@ -440,6 +467,13 @@ function todayLocal() {
 
 const defaultState = {
   patientId: "", date: todayLocal(), visitType: "D0",
+  // Source row in the throughput sheet, set by startIntakeFromReferral. When
+  // present, demographic edits in the intake form are pushed back to that
+  // throughput row so the referral card shows corrected values (and so Floyd
+  // and any other downstream consumers see the corrected phone/insurance/etc).
+  // Cleared in defaultState so a manual D0 (no referral source) doesn't leak
+  // an old rowIndex if the form was reset.
+  referralRowIndex: "",
   diabetesDuration: "", diabetesType: "Type 2", age: "", sex: "",
   // Patient contact + demo (for requisition form)
   address: "", city: "", state: "", zip: "", phone: "", email: "", dob: "",
@@ -577,6 +611,20 @@ function App() {
       if (saved && saved.value) setPhotoPatientId(saved.value);
     } catch(e) {}
   }, []);
+
+  // Photos and consent lookups read photoPatientId. To prevent the cross-patient
+  // leak where loading patient B left photoPatientId on patient A (so the
+  // Photos tab kept showing A's photos and the Consent tab kept reporting A's
+  // signed consents as B's), force photoPatientId to follow form.patientId
+  // automatically. Manual edits to the Photos-tab input still work (they
+  // override until form.patientId next changes), but the default behavior
+  // is now that photo lookups are anchored to whichever patient's record
+  // is loaded.
+  useEffect(function() {
+    if (form.patientId && form.patientId !== photoPatientId) {
+      setPhotoPatientId(form.patientId);
+    }
+  }, [form.patientId]);
 
   // Persist photoPatientId whenever it changes
   useEffect(function() {
@@ -1290,7 +1338,21 @@ function App() {
       if (secondary.memberId) set("memberId2", secondary.memberId);
     }
     var id = generatePatientId();
-    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake" }); });
+    setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake", referralRowIndex: ref.rowIndex || "" }); });
+    // Seed the referral-corrections snapshot to the values we just hydrated.
+    // The diff fires only when one of these changes, so an MA that doesn't
+    // touch demographics generates zero sync traffic. Note: patientName lives
+    // in its own state, not form, so we capture it explicitly here.
+    lastReferralSync.current = {
+      patientName: ref.name || "",
+      dob: ref.dob || "",
+      phone: ref.phone || "",
+      referringProvider: ref.provider || "",
+      insuranceName: primary ? (primary.name || "") : "",
+      memberId: primary ? (primary.memberId || "") : "",
+      insuranceName2: secondary ? (secondary.name || "") : "",
+      memberId2: secondary ? (secondary.memberId || "") : ""
+    };
     // Save to directory
     if (ref.name) {
       var d = directory.slice();
@@ -1493,6 +1555,17 @@ function App() {
         // Member ID sanity: flag if it contains '?' (model couldn't read a character)
         if (p.memberIdPrimary && p.memberIdPrimary.indexOf("?") >= 0) formatWarnings.push("Primary member ID has unreadable characters: " + p.memberIdPrimary);
         if (p.memberIdSecondary && p.memberIdSecondary.indexOf("?") >= 0) formatWarnings.push("Secondary member ID has unreadable characters: " + p.memberIdSecondary);
+        // Medicare MBI format check: if insurance is traditional Medicare but the
+        // member ID doesn't match CMS's MBI pattern, the parse is probably wrong
+        // OR the insurance name was misidentified. Either way, MA should verify
+        // before adding. Doesn't fire for Medicare Advantage plans (they use
+        // their own ID format, not MBI).
+        if (isMedicareTraditional(p.insurancePrimary) && p.memberIdPrimary && !isValidMBI(p.memberIdPrimary)) {
+          formatWarnings.push("Member ID doesn't look like a Medicare MBI — verify with patient or referrer");
+        }
+        if (isMedicareTraditional(p.insuranceSecondary) && p.memberIdSecondary && !isValidMBI(p.memberIdSecondary)) {
+          formatWarnings.push("Secondary member ID doesn't look like a Medicare MBI — verify");
+        }
         // Payer classification
         var payerTier = classifyPayer(p.insurancePrimary, p.insuranceSecondary);
         setParseQueue(function(q){
@@ -1630,8 +1703,68 @@ function App() {
   }
 
   // Silent auto-save: fires on form changes, debounced, no flash messages
-  function autoSaveDraft() {
+  // ----- Referral correction sync -----
+  // When an intake came from a referral (form.referralRowIndex set), demographic
+  // edits in the intake form are pushed back to that throughput row via the
+  // backend's updateReferralCorrections action. Without this, an MA correcting
+  // a misparsed phone number in the intake updates the local draft and the
+  // submitted Sheet1 row but NOT the throughput row that the referral card
+  // reads from — so the card keeps showing the wrong number, and Floyd's
+  // eligibility lookups use the wrong member ID.
+  //
+  // Strategy: track the last-synced snapshot in a ref (no re-renders), diff
+  // against the current form on each autosave, only POST changed fields.
+  // Backend rebuilds the notes string surgically (preserves CONTRA: and
+  // trailing reason). Initial snapshot is seeded at startIntakeFromReferral
+  // and at loadDraft so we don't fire a no-op sync on first autosave.
+  const lastReferralSync = useRef({});
+
+  // Build the eight correction-eligible fields out of current form + name state.
+  function buildReferralCorrectionSnapshot() {
+    return {
+      patientName: patientName || "",
+      dob: form.dob || "",
+      phone: form.phone || "",
+      referringProvider: form.referringProvider || "",
+      insuranceName: form.insuranceName || "",
+      memberId: form.memberId || "",
+      insuranceName2: form.insuranceName2 || "",
+      memberId2: form.memberId2 || ""
+    };
+  }
+
+  function syncReferralCorrections() {
+    if (!form.referralRowIndex || !sheetUrl) return;
+    var current = buildReferralCorrectionSnapshot();
+    var diff = {};
+    for (var k in current) {
+      if (current[k] !== (lastReferralSync.current[k] || "")) {
+        diff[k] = current[k];
+      }
+    }
+    if (Object.keys(diff).length === 0) return;
+    diff._action = "updateReferralCorrections";
+    diff.rowIndex = form.referralRowIndex;
+    try {
+      fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(diff) });
+      // Update snapshot optimistically. If the POST fails silently (no-cors),
+      // we won't retry until the next field actually changes again — acceptable
+      // tradeoff for not pestering the backend with re-tries.
+      Object.assign(lastReferralSync.current, current);
+    } catch(e) {
+      // Network failure: leave snapshot alone so next autosave retries.
+    }
+  }
+
+  function autoSaveDraft(scheduledPatientId) {
     if (!form.patientId) return;
+    // Belt-and-suspenders against cross-patient leak: if the patient ID changed
+    // between when this autosave was scheduled and when it actually fires,
+    // bail rather than risk writing under the wrong patient. The useEffect's
+    // cleanup function should have already cleared the timer in this case,
+    // but if React batched things weirdly or the fire happened mid-flush,
+    // this guard catches it.
+    if (scheduledPatientId && scheduledPatientId !== form.patientId) return;
     // Guard: don't overwrite cloud draft with empty form. If the form has no name,
     // no age, no demographics, no clinical content, refuse to save. This prevents
     // data loss when the form is reset (e.g. after submit, after switching patients,
@@ -1656,14 +1789,25 @@ function App() {
         setLastAutoSave(new Date());
       } catch(e) {}
     }
+    // After the draft is saved, push any demographic/insurance corrections
+    // back to the source throughput row. No-op when this intake didn't come
+    // from a referral (form.referralRowIndex empty).
+    syncReferralCorrections();
   }
 
   // Debounced auto-save effect. Intentionally depends only on form, not patientName:
   // patientName is included inside the save payload but shouldn't trigger saves by itself.
   // This prevents post-submit setPatientName("") from firing a stale autosave.
+  //
+  // Captures form.patientId at schedule time and passes it to autoSaveDraft.
+  // If the patient changes between schedule and fire (because the user rapidly
+  // loaded a different patient), the cleanup below clears the timer AND the
+  // captured-patientId guard inside autoSaveDraft ensures we don't write to
+  // the new patient's row with the previous patient's data.
   useEffect(function() {
     if (!form.patientId) return;
-    var t = setTimeout(autoSaveDraft, 1500);
+    var capturedPid = form.patientId;
+    var t = setTimeout(function() { autoSaveDraft(capturedPid); }, 1500);
     return function() { clearTimeout(t); };
   }, [form]);
 
@@ -1697,12 +1841,45 @@ function App() {
       draftData = drafts[pid];
     }
 
-    if (!draftData) { flash("No draft found for " + pid, "warn"); return; }
+    if (!draftData) {
+      // No draft found anywhere. Don't leave the previous patient's data
+      // visible in the form — that's the cross-patient-leak symptom MAs
+      // reported in clinic. Reset to a clean form labeled with the requested
+      // patientId so the user knows which patient they're entering data for,
+      // but no fields are pre-populated with stale data.
+      flash("No draft found for " + pid + " — starting fresh", "warn");
+      setForm(Object.assign({}, defaultState, { date: todayLocal(), patientId: pid }));
+      setPatientName("");
+      // Reset the referral-corrections snapshot too so the next sync diffs
+      // against blank, not against the previous patient's values.
+      lastReferralSync.current = {
+        patientName: "", dob: "", phone: "", referringProvider: "",
+        insuranceName: "", memberId: "", insuranceName2: "", memberId2: ""
+      };
+      return;
+    }
 
-    // Load intake + device data, clear sensory fields for fresh assessment
-    // Defensive array defaults protect against Sheet1-fallback loads (which don't reconstruct
-    // these fields) and any old drafts saved before these fields existed.
-    var loaded = Object.assign({}, draftData, {
+    // Build the loaded form state.
+    //
+    // CRITICAL: start from defaultState, then layer draftData on top. Without
+    // this, fields that aren't present in draftData end up undefined on the
+    // form object — and React treats inputs with `value={undefined}` as
+    // UNCONTROLLED, meaning the DOM keeps whatever text it had displayed
+    // before. That was the cross-patient-leak bug surfaced in clinic: when
+    // patient B's draft didn't contain a field that patient A's form had
+    // displayed, B's load left A's text visible in that field. The user
+    // sees A's data in B's record, may trust it, may submit it. Clinical
+    // safety bug.
+    //
+    // Starting from defaultState forces every field to a defined value
+    // (empty string, empty array, or the documented default). React then
+    // treats every input as controlled, and the swap is clean.
+    //
+    // The explicit array overrides below are belt-and-suspenders — defaultState
+    // already provides Array(12).fill(false) for the foot grids etc., but
+    // legacy drafts saved before some fields existed may still show up here
+    // and the explicit defaults guarantee correct types.
+    var loaded = Object.assign({}, defaultState, draftData, {
       date: todayLocal(),
       // Defensive: arrays that may be missing from Sheet1 fallback or old drafts
       allergies: (draftData && draftData.allergies) || [],
@@ -1719,6 +1896,22 @@ function App() {
       rightFootPost: (draftData && draftData.rightFootPost) || Array(12).fill(false),
     });
     setForm(loaded);
+    // Seed the referral-corrections snapshot from the loaded draft. If this
+    // intake originally came from a referral, draft has referralRowIndex AND
+    // the demographic fields as they were last saved — we treat those as the
+    // baseline so subsequent edits diff against them, not against blank.
+    // If draft came from a manual D0 (no referralRowIndex), syncReferralCorrections
+    // will be a no-op anyway, so seeding is harmless.
+    lastReferralSync.current = {
+      patientName: (draftData && draftData.patientName) || "",
+      dob: loaded.dob || "",
+      phone: loaded.phone || "",
+      referringProvider: loaded.referringProvider || "",
+      insuranceName: loaded.insuranceName || "",
+      memberId: loaded.memberId || "",
+      insuranceName2: loaded.insuranceName2 || "",
+      memberId2: loaded.memberId2 || ""
+    };
     // Also save to local drafts keyed by the patientId we just loaded (pid),
     // not form.patientId — form.patientId is stale because setForm is async
     // and hasn't applied the new patientId yet at this point.
@@ -3364,9 +3557,27 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       <div className="font-medium text-sm text-gray-900 truncate">{ref.name || "Unknown"}</div>
-                      {!c.hasContra && c.payerTier.tier === "yellow" && (
-                        <span className="text-xs bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">⏱ Long preauth</span>
-                      )}
+                      {!c.hasContra && c.payerTier.tier === "yellow" && (function(){
+                        // For MA plans, the indicator depends on where the patient
+                        // is in the preauth lifecycle. Status "Authorized" or later
+                        // means Floyd already confirmed preauth — show the calm
+                        // "MA · authorized" badge. Anything earlier means preauth
+                        // is still pending — show "Preauth pending" as a quiet
+                        // reminder that intake should wait. Floyd's email parser
+                        // flips status to Authorized automatically when his
+                        // approval email comes in, so the badge updates without
+                        // anyone having to manually change anything.
+                        var s = String(ref.status || "").trim();
+                        var preauthDone = s === "Authorized" ||
+                          s === "D0 Scheduled" || s === "D0 Complete" ||
+                          s.indexOf("Trial Billing") === 0 ||
+                          s === "D20 Complete" || s === "D90 Complete" ||
+                          s === "Reimbursed" || s === "Complete";
+                        if (preauthDone) {
+                          return <span className="text-xs bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">MA · authorized</span>;
+                        }
+                        return <span className="text-xs bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">⏳ Preauth pending</span>;
+                      })()}
                       {!c.hasContra && c.payerTier.tier === "green" && (
                         <span className="text-xs bg-green-200 text-green-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">✓ Medicare</span>
                       )}
@@ -3992,6 +4203,15 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <input className={ic} value={form.memberId} onChange={function(e){set("memberId",e.target.value)}} placeholder="Member ID" />
                       <input className={ic} value={form.groupNum} onChange={function(e){set("groupNum",e.target.value)}} placeholder="Group #" />
                     </div>
+                    {/* MBI format check: if "Medicare" was typed but the member ID
+                        doesn't match CMS's MBI pattern, surface a calm soft warning
+                        right under the field. Doesn't block anything — just nudges
+                        the MA to verify before submission. */}
+                    {isMedicareTraditional(form.insuranceName) && form.memberId && !isValidMBI(form.memberId) && (
+                      <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+                        Member ID format doesn't look like a Medicare MBI — verify with patient or referrer
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <input className={ic} value={form.effectiveDate} onChange={function(e){set("effectiveDate",e.target.value)}} placeholder="Effective date" />
                       <input className={ic} value={form.insuredName} onChange={function(e){set("insuredName",e.target.value)}} placeholder="Insured (if not patient)" />
@@ -4008,6 +4228,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       <input className={ic} value={form.memberId2} onChange={function(e){set("memberId2",e.target.value)}} placeholder="Secondary Member ID" />
                       <input className={ic} value={form.groupNum2} onChange={function(e){set("groupNum2",e.target.value)}} placeholder="Secondary Group #" />
                     </div>
+                    {isMedicareTraditional(form.insuranceName2) && form.memberId2 && !isValidMBI(form.memberId2) && (
+                      <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+                        Secondary member ID doesn't look like a Medicare MBI — verify
+                      </div>
+                    )}
                     <input className={ic} value={form.effectiveDate2} onChange={function(e){set("effectiveDate2",e.target.value)}} placeholder="Secondary effective date" />
                   </div>
 
