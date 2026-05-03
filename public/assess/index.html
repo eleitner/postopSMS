@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-04-30-loadguard";
+window.__APP_VERSION = "2026-05-03-phoneverify";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -1194,7 +1194,36 @@ function App() {
       setCallFollowupNote("");
     }
   }
-
+// Mark a referral's phone as verified. Appends a ✓ marker to the call log
+  // via the backend's markPhoneVerified action. Suppresses future "wrong number"
+  // emails until a NEW wrong-number entry comes in after this verification.
+  // Optimistic update of the local referrals list so the X→✓ flip is immediate.
+  async function verifyPhone(ref) {
+    if (!sheetUrl || !ref || !ref.rowIndex) return;
+    if (!confirm("Mark " + (ref.phone || "this number") + " as verified for " + (ref.name || "this patient") + "?")) return;
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser) ? firebase.auth().currentUser.email : "";
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({ _action: "markPhoneVerified", rowIndex: ref.rowIndex, userEmail: userEmail })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        flash("Phone verified");
+        // Optimistic local update so the badge flips without a full refresh
+        setReferrals(function(prev) {
+          return prev.map(function(r) {
+            if (r.rowIndex !== ref.rowIndex) return r;
+            return Object.assign({}, r, { callLog: result.callLog });
+          });
+        });
+      } else {
+        flash("Verify failed: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) {
+      flash("Verify error: " + e.toString(), "err");
+    }
+  }
   // Debounced backend search on patient name. Backend filters to this user's
   // sites automatically. Results populate the dropdown under the search input.
   async function searchPatientsByName(query) {
@@ -3638,7 +3667,49 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     </div>
                   )}
                   <div className="flex items-center justify-between">
-                    <div className="text-xs text-gray-500">{ref.provider ? "Ref: " + ref.provider : ""}{ref.phone ? " | " + ref.phone : ""}</div>
+                    <div className="text-xs text-gray-500 flex items-center gap-1 flex-wrap">
+                      {ref.provider ? "Ref: " + ref.provider : ""}
+                      {ref.phone && (
+                        <React.Fragment>
+                          <span>{ref.provider ? " | " : ""}{ref.phone}</span>
+                          {(function(){
+                            // Phone validation badge derived from call log.
+                            // Walk log backwards: first ✓ marker = verified state,
+                            // first wrong-number entry without a later ✓ = unverified.
+                            // Same logic as the backend webhook so visual matches behavior.
+                            var logStr = String(ref.callLog || "");
+                            if (!logStr) return null;
+                            var lines = logStr.split("\n");
+                            var state = null;
+                            for (var li = lines.length - 1; li >= 0; li--) {
+                              var line = lines[li];
+                              if (line.indexOf("✓ phone verified") === 0) { state = "verified"; break; }
+                              if (line.indexOf("Wrong number") !== -1 && line.indexOf("✓") !== 0) { state = "wrong"; break; }
+                            }
+                            if (state === "verified") {
+                              return (
+                                <button title="Phone verified — tap to revert"
+                                  onClick={function(){
+                                    if (!confirm("Revert verification? This re-flags the number as wrong.")) return;
+                                    // Revert by logging a fresh wrong-number entry.
+                                    // Reuses logCallAttempt path so audit trail is consistent.
+                                    logCallAttempt(ref.rowIndex, "Wrong number", "verification reverted");
+                                  }}
+                                  className="text-green-600 font-bold ml-0.5">✓</button>
+                              );
+                            }
+                            if (state === "wrong") {
+                              return (
+                                <button title="Number flagged wrong — tap to verify"
+                                  onClick={function(){ verifyPhone(ref); }}
+                                  className="text-red-600 font-bold ml-0.5">✗</button>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </React.Fragment>
+                      )}
+                    </div>
                     <div className={"text-xs " + (isStale ? "text-orange-600 font-bold" : "text-gray-400")}>{days > 0 ? days + "d ago" : "Today"}</div>
                   </div>
                   {(function(){
