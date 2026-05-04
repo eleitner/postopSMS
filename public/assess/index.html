@@ -331,7 +331,7 @@ function isValidMBI(s) {
   if (!s) return false;
   var clean = String(s).replace(/[\s-]/g, "").toUpperCase();
   if (clean.length !== 11) return false;
-  return /^[1-9][AC-HJ-KMNP-RT-Y][0-9]{2}[AC-HJ-KMNP-RT-Y][0-9][AC-HJ-KMNP-RT-Y]{2}[0-9]{3}$/.test(clean);
+  return /^[1-9][AC-HJ-KMNP-RT-Y][0-9AC-HJ-KMNP-RT-Y][0-9][AC-HJ-KMNP-RT-Y][0-9AC-HJ-KMNP-RT-Y][0-9][AC-HJ-KMNP-RT-Y]{2}[0-9]{2}$/.test(clean);
 }
 
 // Returns true if the insurance name indicates TRADITIONAL Medicare (Part A/B/D),
