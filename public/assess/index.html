@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-07-loaddraft-name";
+window.__APP_VERSION = "2026-05-07-loaddraft-name-2";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -1890,7 +1890,9 @@ async function parseMedicareCard(base64Data, isSecondary) {
 
   async function loadDraft(optionalId, expectedName) {
     var pid = (typeof optionalId === "string" && optionalId) ? optionalId : form.patientId;
+    var draftData = null;
 
+    // Try cloud first
     // Try cloud first
     if (sheetUrl) {
       try {
