@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-07-parse-feedback";
+window.__APP_VERSION = "2026-05-07-loaddraft-name";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -1888,10 +1888,8 @@ async function parseMedicareCard(base64Data, isSecondary) {
     return function() { clearTimeout(t); };
   }, [form]);
 
-  async function loadDraft(optionalId) {
+  async function loadDraft(optionalId, expectedName) {
     var pid = (typeof optionalId === "string" && optionalId) ? optionalId : form.patientId;
-    if (!pid) { flash("Enter Study ID to load", "err"); return; }
-    var draftData = null;
 
     // Try cloud first
     if (sheetUrl) {
@@ -2012,11 +2010,18 @@ async function parseMedicareCard(base64Data, isSecondary) {
     // (rather than carry over prior patient's name). The draft's patientName
     // field is authoritative because it was set at draft creation time; the
     // directory is a cache that may be stale.
-    var dirEntry = directory.find(function(e) { return e.id === pid; });
+   var dirEntry = directory.find(function(e) { return e.id === pid; });
     if (dirEntry) {
       setPatientName(dirEntry.name);
     } else if (draftData && draftData.patientName) {
       setPatientName(draftData.patientName);
+    } else if (expectedName) {
+      // Caller passed the name they expect (e.g. Refs "Open Draft" knows the
+      // throughput row name). Honor it — the caller has more context than we
+      // do about what should be in this field. This is the fix for the
+      // Buchanon-class bug where loading a draft for a patient with no Sheet1
+      // row + no directory entry was wiping the freshly-set name.
+      setPatientName(expectedName);
     } else {
       // No name source available. Clear rather than keep the previous patient's
       // name visible — a blank field is a clear signal that something's missing,
@@ -3887,7 +3892,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       setPatientName(ref.name || "");
                       setFormSection("intake");
                       setView("form");
-                      loadDraft(ref.dncId);
+                      loadDraft(ref.dncId, ref.name);
                     }}
                       className="flex-1 py-1.5 bg-gray-200 text-gray-700 rounded text-xs font-medium">Open Draft</button>
                   )}
@@ -4192,10 +4197,10 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     nameSearchResults.map(function(r, i) {
                       return (
                         <button key={i} onMouseDown={function(e){e.preventDefault()}} onClick={function(){
-                          if (r.dncId) {
+                         if (r.dncId) {
                             set("patientId", r.dncId);
                             setPatientName(r.name || "");
-                            loadDraft(r.dncId);
+                            loadDraft(r.dncId, r.name);
                           } else {
                             // Referral exists but no DNC ID yet — user should go
                             // through call-patient flow on Referrals tab instead
