@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-04-mbi-dual";
+window.__APP_VERSION = "2026-05-07-parse-feedback";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -648,8 +648,8 @@ function App() {
   const [dirSearch, setDirSearch] = useState("");
   const [patientName, setPatientName] = useState("");
   const [transcript, setTranscript] = useState("");
-  const [parsing, setParsing] = useState(false);
-  const [referrals, setReferrals] = useState([]);
+const [parsing, setParsing] = useState(false);
+  const [referralParsing, setReferralParsing] = useState(false);  const [referrals, setReferrals] = useState([]);
   const [referralsLoading, setReferralsLoading] = useState(false);
 
   // Pending Payer Updates (admin/Lindsey reviewable). Floyd's emails detect
@@ -1535,16 +1535,58 @@ async function parseMedicareCard(base64Data, isSecondary) {
   function handleReferralPhotoCapture(e) {
     var files = Array.from(e.target.files || []);
     if (!files.length) return;
+    setReferralParsing(true);
 
     // Single-file path: use existing flow that pre-fills the NEW REFERRAL form
     if (files.length === 1) {
       var reader = new FileReader();
-      reader.onload = function(ev) { parseReferralPhoto(ev.target.result); };
-      reader.onerror = function() { flash("Failed to read photo file, try again", "err"); };
+      reader.onload = function(ev) {
+        Promise.resolve(parseReferralPhoto(ev.target.result))
+          .finally(function(){ setReferralParsing(false); });
+      };
+      reader.onerror = function() {
+        flash("Failed to read photo file, try again", "err");
+        setReferralParsing(false);
+      };
       reader.readAsDataURL(files[0]);
-      e.target.value = ""; // allow re-selection of same file
+      e.target.value = "";
       return;
     }
+
+    // Multi-file path: parse all into a queue, user reviews and adds each
+    var now = Date.now();
+    var newItems = files.map(function(file, i) {
+      return { id: now + i, status: "parsing", parsed: null, error: "", fileName: file.name || ("Photo " + (i+1)) };
+    });
+    setParseQueue(function(q){ return q.concat(newItems); });
+    flash("Parsing " + files.length + " referrals...");
+
+    var pendingCount = files.length;
+    function decrementPending() {
+      pendingCount--;
+      if (pendingCount === 0) setReferralParsing(false);
+    }
+
+    files.forEach(function(file, i) {
+      var qid = newItems[i].id;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        Promise.resolve(parseReferralToQueue(qid, ev.target.result))
+          .finally(decrementPending);
+      };
+      reader.onerror = function() {
+        setParseQueue(function(q){
+          return q.map(function(item){
+            return item.id === qid ? Object.assign({}, item, { status: "error", error: "Read failed" }) : item;
+          });
+        });
+        decrementPending();
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = "";
+  }
 
     // Multi-file path: parse all into a queue, user reviews and adds each
     var now = Date.now();
@@ -3425,9 +3467,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
           {role === "ma" && (
             <div className="bg-green-50 rounded p-3 border border-green-200 space-y-2">
               <div className="text-xs font-semibold text-green-700">NEW REFERRAL</div>
-              <label className="block w-full py-2 bg-blue-600 text-white rounded text-sm font-medium text-center cursor-pointer">
-                Snap Referral Sheet(s) — pick one or many
-                <input type="file" accept="image/*" multiple onChange={handleReferralPhotoCapture} className="hidden" />
+              <label className={"block w-full py-2 rounded text-sm font-medium text-center text-white " +
+                (referralParsing ? "bg-gray-400 cursor-wait pointer-events-none" : "bg-blue-600 cursor-pointer")}>
+                {referralParsing ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                    Parsing referral... (~15s)
+                  </span>
+                ) : "Snap Referral Sheet(s) — pick one or many"}
+                <input type="file" accept="image/*" multiple onChange={handleReferralPhotoCapture}
+                  disabled={referralParsing} className="hidden" />
               </label>
 
               {/* Parse queue (batch mode) */}
