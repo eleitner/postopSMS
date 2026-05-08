@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-07-loaddraft-name-2";
+window.__APP_VERSION = "2026-05-08-payer-queue-ui";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -152,7 +152,7 @@ window.addEventListener("visibilitychange", function() {
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 const STORAGE_KEY = "dpn-assessments";
 const DRAFTS_KEY = "dpn-drafts";
@@ -588,11 +588,88 @@ function Stopwatch() {
             <button onClick={stop} className="flex-1 py-1 bg-red-600 text-white rounded text-xs font-medium">Stop</button>
             <button onClick={reset} className="flex-1 py-1 bg-gray-200 text-gray-700 rounded text-xs font-medium">Reset</button>
           </React.Fragment>
-        )}
+       )}
       </div>
     </div>
   );
 }
+
+// ============================================================
+// PAYER ACTION QUEUE — pure helpers
+// All presentation logic for the queue lives frontend-side per design lock.
+// Backend returns raw deadline + deadlineSource; frontend computes urgency
+// (TZ-aware, recomputes as time passes).
+// ============================================================
+var PAYER_ACTION_SLA_MS = {
+  p2p_request: 24 * 60 * 60 * 1000,                  // 24h
+  appeal_required: 65 * 24 * 60 * 60 * 1000,         // 65d
+  additional_info_request: 14 * 24 * 60 * 60 * 1000  // 14d
+};
+
+var PAYER_ACTION_TYPE_LABEL = {
+  p2p_request: "P2P",
+  appeal_required: "Appeal",
+  additional_info_request: "Info"
+};
+
+// Effective deadline ms-epoch. Explicit deadline wins; SLA-default falls back
+// to createdAt + slaWindow. Used for sorting (most-urgent-first) and color.
+function effectiveDeadlineMs(action) {
+  if (action.deadlineSource === "explicit_pdf" && action.deadline) {
+    return new Date(action.deadline).getTime();
+  }
+  var created = action.createdAt ? new Date(action.createdAt).getTime() : Date.now();
+  var slaMs = PAYER_ACTION_SLA_MS[action.actionType] || 0;
+  return created + slaMs;
+}
+
+// Urgency color for the badge. Per design lock:
+//   explicit deadline + past   → red
+//   explicit deadline + <24h   → amber
+//   explicit deadline + future → gray
+//   SLA-default + window past  → red (window blew, escalate)
+//   SLA-default otherwise      → gray (don't fake amber from a default)
+function urgencyForAction(action, now) {
+  now = now || Date.now();
+  var ONE_DAY = 24 * 60 * 60 * 1000;
+  if (action.deadlineSource === "explicit_pdf" && action.deadline) {
+    var dl = new Date(action.deadline).getTime();
+    if (dl < now) return { color: "red" };
+    if (dl < now + ONE_DAY) return { color: "amber" };
+    return { color: "gray" };
+  }
+  // SLA-default branch
+  var created = action.createdAt ? new Date(action.createdAt).getTime() : now;
+  var slaMs = PAYER_ACTION_SLA_MS[action.actionType] || 0;
+  if (created + slaMs < now) return { color: "red" };
+  return { color: "gray" };
+}
+
+// Humanize deadline for badge text. Explicit → "due 5/9 5pm". SLA-default →
+// "~24h SLA" / "~65d SLA" / "~14d SLA". Don't fake a timestamp from a default.
+function formatDeadline(deadline, deadlineSource, actionType) {
+  if (deadlineSource === "explicit_pdf" && deadline) {
+    try {
+      var d = new Date(deadline);
+      var month = d.getMonth() + 1;
+      var day = d.getDate();
+      var hours24 = d.getHours();
+      var minutes = d.getMinutes();
+      var ampm = hours24 >= 12 ? "pm" : "am";
+      var hours12 = (hours24 % 12) || 12;
+      var minStr = minutes === 0 ? "" : ":" + (minutes < 10 ? "0" : "") + minutes;
+      return "due " + month + "/" + day + " " + hours12 + minStr + ampm;
+    } catch(e) {
+      return "due (parse error)";
+    }
+  }
+  if (actionType === "p2p_request") return "~24h SLA";
+  if (actionType === "appeal_required") return "~65d SLA";
+  if (actionType === "additional_info_request") return "~14d SLA";
+  return "SLA";
+}
+
+function App() {
 
 function App() {
   const [form, setForm] = useState(defaultState);
@@ -674,9 +751,46 @@ function App() {
   // Fetched from backend's listCosignQueue endpoint, filtered by logged-in email.
   // Each item: {cosignId, docType, docName, docUrl, docId, patientId,
   //             authorEmail, authorRole, siteId, createdAt, notes}
-  const [cosignQueue, setCosignQueue] = useState([]);
+ const [cosignQueue, setCosignQueue] = useState([]);
   const [cosignLoading, setCosignLoading] = useState(false);
   const [cosignSigning, setCosignSigning] = useState(null); // cosignId currently being signed
+
+  // Payer Action Queue — open p2p_request / appeal_required / additional_info_request
+  // rows for this user's allowed sites. Backend filter via email param.
+  // Each item: {actionId, dncId, patientName, payer, actionType, refNumber,
+  //             memberId, cpt, dx, deadline, deadlineSource, status, sources,
+  //             sourceCount, hasConflict, createdAt, lastUpdated, resolvedAt,
+  //             notes, siteId}
+  // Urgency color computed frontend-side via urgencyForAction() — backend
+  // returns raw deadline + deadlineSource only.
+  const [payerQueue, setPayerQueue] = useState([]);
+  const [payerQueueLoading, setPayerQueueLoading] = useState(false);
+  const [payerResolving, setPayerResolving] = useState(null); // actionId currently being resolved
+
+  // Map dncId → most-urgent-action summary, for Refs card badge render (Piece B).
+  // "Most urgent" = earliest effective deadline (explicit OR SLA-default fallback).
+  // count = total open actions for that DNC, used for "+N more" suffix.
+  // Recomputes only when payerQueue changes — render-cheap.
+  const mostUrgentByDnc = useMemo(function() {
+    var map = {};
+    payerQueue.forEach(function(a) {
+      if (!a.dncId) return;
+      var entry = map[a.dncId];
+      var urgency = effectiveDeadlineMs(a);
+      if (!entry || urgency < entry.urgency) {
+        map[a.dncId] = {
+          actionType: a.actionType,
+          deadline: a.deadline,
+          deadlineSource: a.deadlineSource,
+          urgency: urgency,
+          count: (entry ? entry.count : 0) + 1
+        };
+      } else {
+        entry.count += 1;
+      }
+    });
+    return map;
+  }, [payerQueue]);
   const [role, setRole] = useState(localStorage.getItem("dncRole") || "ma");
   const [newRef, setNewRef] = useState({ name: "", dob: "", phone: "", provider: "", notes: "" });
   const [dupModal, setDupModal] = useState(null); // {existing: {...}, source} when a duplicate referral is detected
@@ -838,6 +952,74 @@ function App() {
     setCosignLoading(false);
   }
 
+  // Load open payer-action queue for the currently-signed-in user. Backend
+  // filters by allowed sites server-side via the Users sheet — frontend just
+  // passes email and renders what comes back. Mirrors loadCosignQueue shape.
+  // Safe to call frequently; used on Cosign tab focus + manual refresh.
+  async function loadPayerQueue() {
+    if (!sheetUrl) return;
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+      ? firebase.auth().currentUser.email : "";
+    if (!userEmail) { flash("Sign in required", "err"); return; }
+    setPayerQueueLoading(true);
+    try {
+      var resp = await fetch(sheetUrl + "?action=listPayerActionQueue&email=" + encodeURIComponent(userEmail));
+      var result = await resp.json();
+      if (result.status === "ok") {
+        setPayerQueue(result.queue || []);
+      } else {
+        flash("Payer queue error: " + (result.message || "unknown"), "err");
+      }
+    } catch(e) {
+      flash("Payer queue load error: " + e.toString(), "err");
+    }
+    setPayerQueueLoading(false);
+  }
+
+  // Resolve a payer-action queue entry. Optimistic local removal — backend
+  // confirms via 200 OK, on error we restore the prior queue state and
+  // re-fetch to converge with server truth. resolution must be one of:
+  // "resolved" | "superseded" | "expired".
+  async function resolvePayerActionEntry(actionId, resolution, notes) {
+    if (!sheetUrl || !actionId) return;
+    if (!/^(resolved|superseded|expired)$/.test(String(resolution || ""))) {
+      flash("Invalid resolution: " + resolution, "err");
+      return;
+    }
+    var userEmail = (typeof firebase !== "undefined" && firebase.auth && firebase.auth().currentUser)
+      ? firebase.auth().currentUser.email : "";
+    // Snapshot for rollback BEFORE optimistic removal
+    var prevQueue = payerQueue.slice();
+    setPayerQueue(payerQueue.filter(function(a) { return a.actionId !== actionId; }));
+    setPayerResolving(actionId);
+    try {
+      var resp = await fetch(sheetUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          _action: "resolvePayerAction",
+          actionId: actionId,
+          resolution: resolution,
+          notes: notes || "",
+          email: userEmail
+        })
+      });
+      var result = await resp.json();
+      if (result.status === "ok") {
+        flash("Marked " + resolution);
+      } else {
+        // Server rejected — restore and refetch to converge
+        setPayerQueue(prevQueue);
+        flash("Resolve failed: " + (result.message || "unknown"), "err");
+        loadPayerQueue();
+      }
+    } catch(e) {
+      setPayerQueue(prevQueue);
+      flash("Resolve error: " + e.toString(), "err");
+      loadPayerQueue();
+    }
+    setPayerResolving(null);
+  }
+
   // Sign a specific cosign entry. Backend handles:
   //   - marking the Cosign row as "signed"
   //   - appending physician signature PNG to the Doc
@@ -878,10 +1060,15 @@ function App() {
     setCosignSigning(null);
   }
 
-  // Auto-load cosign queue when user switches to the Cosign tab.
+  // Auto-load cosign queue + payer action queue when user switches to the
+  // Cosign tab. Both queues live on the same tab; refresh together so the
+  // user sees current state without a manual tap. Payer queue is also used
+  // by Refs card badges (Piece B), but Cosign-tab focus is the primary
+  // refresh trigger; manual refresh button covers the rest.
   useEffect(function() {
     if (view === "cosign") {
       loadCosignQueue();
+      loadPayerQueue();
     }
   }, [view]);
 
