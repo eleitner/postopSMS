@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-08-payer-queue-ui";
+window.__APP_VERSION = "2026-05-08-payer-queue-c";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -764,8 +764,20 @@ function App() {
   // returns raw deadline + deadlineSource only.
   const [payerQueue, setPayerQueue] = useState([]);
   const [payerQueueLoading, setPayerQueueLoading] = useState(false);
-  const [payerResolving, setPayerResolving] = useState(null); // actionId currently being resolved
+const [payerResolving, setPayerResolving] = useState(null); // actionId currently being resolved
 
+  // Piece C — Payer queue UI state.
+  // payerResolveModal: null OR the action object being resolved (modal open).
+  // payerResolveOutcome: "" | "resolved" | "superseded" | "expired"
+  // payerResolveNotes: free-text audit context, optional.
+  // payerExpandedActionId: actionId whose details are visible (tap-to-expand body).
+  // scrollToDncId: set by a Refs badge tap to flag which row to scroll into
+  //                view + pulse when the Cosign tab mounts.
+  const [payerResolveModal, setPayerResolveModal] = useState(null);
+  const [payerResolveOutcome, setPayerResolveOutcome] = useState("");
+  const [payerResolveNotes, setPayerResolveNotes] = useState("");
+  const [payerExpandedActionId, setPayerExpandedActionId] = useState(null);
+  const [scrollToDncId, setScrollToDncId] = useState(null);
   // Map dncId → most-urgent-action summary, for Refs card badge render (Piece B).
   // "Most urgent" = earliest effective deadline (explicit OR SLA-default fallback).
   // count = total open actions for that DNC, used for "+N more" suffix.
@@ -1064,13 +1076,36 @@ function App() {
   // user sees current state without a manual tap. Payer queue is also used
   // by Refs card badges (Piece B), but Cosign-tab focus is the primary
   // refresh trigger; manual refresh button covers the rest.
-  useEffect(function() {
+  
+useEffect(function() {
     if (view === "cosign") {
       loadCosignQueue();
       loadPayerQueue();
     }
   }, [view]);
 
+  // Scroll-to-row when user taps a Refs card payer action badge. The badge
+  // sets scrollToDncId + flips view to cosign; this effect runs once the
+  // queue has rendered, finds the matching row by data-dnc-id, scrolls it
+  // into view, and pulses a blue ring for 2s so the user sees where they
+  // landed. Cleared after each scroll. Re-runs when payerQueue updates so
+  // a tap that fires before the GET completes still finds its row.
+  useEffect(function() {
+    if (view !== "cosign" || !scrollToDncId) return;
+    var dncId = scrollToDncId;
+    var t = setTimeout(function() {
+      var row = document.querySelector('[data-dnc-id="' + dncId + '"]');
+      if (row) {
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        row.classList.add("ring-2", "ring-blue-400");
+        setTimeout(function() {
+          row.classList.remove("ring-2", "ring-blue-400");
+        }, 2000);
+      }
+      setScrollToDncId(null);
+    }, 350);
+    return function() { clearTimeout(t); };
+  }, [view, scrollToDncId, payerQueue]);
   // Load pending payer updates — accumulator of Floyd-detected eligibility
   // info awaiting human approval. Called when settings panel opens.
   async function loadPendingPayerUpdates() {
@@ -4066,7 +4101,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   var moreSuffix = u.count > 1 ? " · +" + (u.count - 1) + " more" : "";
                   return (
                     <button
-                      onClick={function(){ setView("cosign"); }}
+                     onClick={function(){ setScrollToDncId(ref.dncId); setView("cosign"); }}
                       className={"text-xs px-2 py-1 rounded inline-flex items-center gap-1 mt-1 " + colorClasses}>
                       📋 {typeLabel} · {deadlineStr}{moreSuffix}
                     </button>
@@ -4202,7 +4237,127 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               </div>
             );
           })}
+
+          {/* ============================================================
+              PAYER ACTION QUEUE — surfaces open p2p_request /
+              appeal_required / additional_info_request rows. Sorted by
+              effective deadline ascending (earliest first). Row body
+              taps expand to show source emails, member info, notes,
+              conflict detail. Mark-done opens a modal with three
+              outcomes: resolved | superseded | expired. Optimistic
+              local removal on confirm; backend re-fetch on error.
+              ============================================================ */}
+          <div className="border-t border-gray-200 pt-4 mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <div className="text-base font-semibold text-gray-800">Payer Actions ({payerQueue.length})</div>
+                <div className="text-xs text-gray-500">P2P · appeals · info requests</div>
+              </div>
+              <button onClick={loadPayerQueue}
+                className="px-3 py-2 bg-blue-50 text-blue-600 rounded text-xs font-medium">
+                Refresh
+              </button>
+            </div>
+
+            {payerQueueLoading && (
+              <div className="text-center text-gray-400 text-sm py-4">Loading...</div>
+            )}
+
+            {!payerQueueLoading && payerQueue.length === 0 && (
+              <div className="text-center py-4 text-sm text-gray-500">No payer actions pending.</div>
+            )}
+
+            {!payerQueueLoading && payerQueue.length > 0 && (function(){
+              // Sort most-urgent first via effective deadline (explicit OR SLA-default fallback).
+              var sorted = payerQueue.slice().sort(function(a, b){
+                return effectiveDeadlineMs(a) - effectiveDeadlineMs(b);
+              });
+              return sorted.map(function(a) {
+                var color = urgencyForAction(a, Date.now()).color;
+                var deadlineCls = color === "red"   ? "text-red-700 bg-red-50"
+                                : color === "amber" ? "text-amber-700 bg-amber-50"
+                                                    : "text-gray-600 bg-gray-50";
+                var typeLabel = PAYER_ACTION_TYPE_LABEL[a.actionType] || a.actionType;
+                var deadlineStr = formatDeadline(a.deadline, a.deadlineSource, a.actionType);
+                var isExpanded = payerExpandedActionId === a.actionId;
+                var isResolving = payerResolving === a.actionId;
+                return (
+                  <div key={a.actionId}
+                    id={"payer-row-" + a.actionId}
+                    data-dnc-id={a.dncId || ""}
+                    className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm mb-2 transition-all">
+                    <div className="flex items-start justify-between gap-2">
+                      <button
+                        onClick={function(){ setPayerExpandedActionId(isExpanded ? null : a.actionId); }}
+                        className="flex-1 min-w-0 text-left">
+                        <div className="text-sm font-semibold text-gray-800 truncate">
+                          {a.patientName || "Unknown"}{a.dncId ? " · " + a.dncId : ""}
+                        </div>
+                        <div className="text-xs text-gray-600 mt-0.5">
+                          {typeLabel}{a.payer ? " · " + a.payer : ""}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <span className={"text-xs px-2 py-0.5 rounded " + deadlineCls}>
+                            {deadlineStr}
+                          </span>
+                          {a.sourceCount > 1 && (
+                            <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                              {a.sourceCount} sources
+                            </span>
+                          )}
+                          {a.hasConflict && (
+                            <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                              ⚠ conflict
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                      <button onClick={function(){
+                          setPayerResolveModal(a);
+                          setPayerResolveOutcome("");
+                          setPayerResolveNotes("");
+                        }}
+                        disabled={isResolving}
+                        className={"shrink-0 px-3 py-2 rounded text-xs font-medium " +
+                          (isResolving ? "bg-gray-300 text-gray-500" : "bg-green-600 text-white")}>
+                        {isResolving ? "..." : "Mark done"}
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-3 pt-3 border-t border-gray-100 space-y-2 text-xs">
+                        {a.refNumber && <div><span className="text-gray-500">Ref:</span> {a.refNumber}</div>}
+                        {a.memberId && <div><span className="text-gray-500">Member ID:</span> {a.memberId}</div>}
+                        {a.cpt && <div><span className="text-gray-500">CPT:</span> {a.cpt}</div>}
+                        {a.dx && <div><span className="text-gray-500">DX:</span> {a.dx}</div>}
+                        {Array.isArray(a.sources) && a.sources.length > 0 && (
+                          <div>
+                            <div className="text-gray-500 mb-1">Sources ({a.sources.length}):</div>
+                            <div className="space-y-1">
+                              {a.sources.map(function(s, i) {
+                                var label = typeof s === "string" ? s
+                                  : (s && (s.subject || s.from)) ? ((s.subject || "") + (s.from ? " · " + s.from : ""))
+                                  : JSON.stringify(s);
+                                return <div key={i} className="bg-gray-50 rounded px-2 py-1 text-gray-700 truncate">{label}</div>;
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        {a.notes && (
+                          <div>
+                            <div className="text-gray-500 mb-1">Notes:</div>
+                            <div className="bg-gray-50 rounded px-2 py-1 text-gray-700 whitespace-pre-wrap">{a.notes}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
+          </div>
         </div>
+
       )}
 
       {/* ========== CONSENT TAB ========== */}
@@ -5362,6 +5517,77 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 disabled={!callOutcome || callSubmitting || (callOutcome === "other" && !callOutcomeReason.trim())}
                 className={"flex-1 py-2 text-white text-sm rounded font-medium " + ((!callOutcome || callSubmitting || (callOutcome === "other" && !callOutcomeReason.trim())) ? "bg-gray-400" : "bg-blue-600")}>
                 {callSubmitting ? "Logging..." : "Log attempt"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== PAYER ACTION RESOLVE MODAL ========== */}
+      {payerResolveModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+          onClick={function(e){ if(e.target===e.currentTarget){ setPayerResolveModal(null); setPayerResolveOutcome(""); setPayerResolveNotes(""); } }}>
+          <div className="bg-white rounded-lg p-4 max-w-md w-full" onClick={function(e){e.stopPropagation()}}>
+            <div className="text-base font-semibold text-gray-800 mb-1">Mark action done</div>
+            <div className="text-xs text-gray-500 mb-3">
+              {(PAYER_ACTION_TYPE_LABEL[payerResolveModal.actionType] || payerResolveModal.actionType)}
+              {payerResolveModal.patientName ? " · " + payerResolveModal.patientName : ""}
+              {payerResolveModal.dncId ? " · " + payerResolveModal.dncId : ""}
+            </div>
+
+            <div className="text-xs font-semibold text-gray-700 mb-2">Outcome</div>
+            <div className="space-y-2 mb-3">
+              {[
+                ["resolved",   "Resolved",   "Action completed (P2P done, info sent, appeal filed)"],
+                ["superseded", "Superseded", "Replaced by newer info or another action"],
+                ["expired",    "Expired",    "Deadline passed, no longer actionable"]
+              ].map(function(opt){
+                var v = opt[0], label = opt[1], hint = opt[2];
+                var selected = payerResolveOutcome === v;
+                return (
+                  <button key={v}
+                    onClick={function(){ setPayerResolveOutcome(v); }}
+                    className={"w-full text-left p-2 rounded border " +
+                      (selected ? "border-blue-500 bg-blue-50" : "border-gray-200 bg-white")}>
+                    <div className="text-sm font-medium text-gray-800">
+                      {selected ? "● " : "○ "}{label}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">{hint}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="block text-xs font-medium text-gray-600 mb-1">Notes (optional)</label>
+            <textarea className={ic + " mb-3 h-16"}
+              value={payerResolveNotes}
+              onChange={function(e){ setPayerResolveNotes(e.target.value); }}
+              placeholder="Brief context for the audit log..." />
+
+            <div className="flex gap-2">
+              <button onClick={function(){
+                  setPayerResolveModal(null);
+                  setPayerResolveOutcome("");
+                  setPayerResolveNotes("");
+                }}
+                className="flex-1 py-2 bg-gray-100 text-gray-700 rounded text-sm font-medium">
+                Cancel
+              </button>
+              <button
+                onClick={function(){
+                  if (!payerResolveOutcome) return;
+                  var actionId = payerResolveModal.actionId;
+                  var outcome = payerResolveOutcome;
+                  var notes = payerResolveNotes;
+                  setPayerResolveModal(null);
+                  setPayerResolveOutcome("");
+                  setPayerResolveNotes("");
+                  resolvePayerActionEntry(actionId, outcome, notes);
+                }}
+                disabled={!payerResolveOutcome}
+                className={"flex-1 py-2 rounded text-sm font-medium " +
+                  (payerResolveOutcome ? "bg-green-600 text-white" : "bg-gray-300 text-gray-500")}>
+                Confirm
               </button>
             </div>
           </div>
