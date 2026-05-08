@@ -4046,7 +4046,33 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     </div>
                   );
                 })()}
-                <div className="flex gap-2 pt-1">
+{/* Payer action badge — surfaces ANY open p2p_request / appeal_required /
+                    additional_info_request for this DNC ID. Color reflects urgency:
+                      gray  = explicit deadline > 24h out, OR SLA-default still in window
+                      amber = explicit deadline within 24h
+                      red   = explicit deadline past, OR SLA-default window blew
+                    "+N more" suffix when this patient has multiple open actions; tapping
+                    the badge switches to Cosign tab where (Piece C) the full queue with
+                    Mark-done lives. v1 just switches tabs; row-scroll is a later refinement. */}
+                {ref.dncId && (function(){
+                  var u = mostUrgentByDnc[ref.dncId];
+                  if (!u) return null;
+                  var color = urgencyForAction(u, Date.now()).color;
+                  var colorClasses = color === "red"   ? "bg-red-100 text-red-800"
+                                   : color === "amber" ? "bg-amber-100 text-amber-800"
+                                                       : "bg-gray-100 text-gray-700";
+                  var typeLabel = PAYER_ACTION_TYPE_LABEL[u.actionType] || "Action";
+                  var deadlineStr = formatDeadline(u.deadline, u.deadlineSource, u.actionType);
+                  var moreSuffix = u.count > 1 ? " · +" + (u.count - 1) + " more" : "";
+                  return (
+                    <button
+                      onClick={function(){ setView("cosign"); }}
+                      className={"text-xs px-2 py-1 rounded inline-flex items-center gap-1 mt-1 " + colorClasses}>
+                      📋 {typeLabel} · {deadlineStr}{moreSuffix}
+                    </button>
+                  );
+                })()}
+                        <div className="flex gap-2 pt-1">
                   {/* Call logging button — always available regardless of pipeline
                       stage. Bradley flagged that once intake started, there was
                       no way to log additional call attempts (e.g., patient hung
