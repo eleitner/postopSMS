@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-08-payer-queue-c";
+window.__APP_VERSION = "2026-05-09-submit-stopwatch-clear";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -549,7 +549,7 @@ const defaultState = {
 // measurements (SLS per leg, 10m walk) so MAs don't have to scroll or mentally
 // track which test the shared clock is for. No props needed; component renders
 // its own elapsed time and Start/Stop/Reset buttons.
-function Stopwatch() {
+function Stopwatch(props) {
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0); // ms
   const [startTime, setStartTime] = useState(null);
@@ -566,7 +566,14 @@ function Stopwatch() {
     setStartTime(Date.now() - elapsed);
     setRunning(true);
   }
-  function stop() { setRunning(false); }
+  function stop() {
+    setRunning(false);
+    // Push final elapsed to caller. Use Date.now()-startTime instead of `elapsed`
+    // state because state can be up to 50ms stale (interval tick).
+    if (props.onStop && startTime != null) {
+      props.onStop((Date.now() - startTime) / 1000);
+    }
+  }
   function reset() { setRunning(false); setElapsed(0); setStartTime(null); }
   var seconds = (elapsed / 1000).toFixed(1);
 
@@ -588,12 +595,11 @@ function Stopwatch() {
             <button onClick={stop} className="flex-1 py-1 bg-red-600 text-white rounded text-xs font-medium">Stop</button>
             <button onClick={reset} className="flex-1 py-1 bg-gray-200 text-gray-700 rounded text-xs font-medium">Reset</button>
           </React.Fragment>
-       )}
+        )}
       </div>
     </div>
   );
 }
-
 // ============================================================
 // PAYER ACTION QUEUE — pure helpers
 // All presentation logic for the queue lives frontend-side per design lock.
@@ -679,6 +685,7 @@ function App() {
   const [formSection, setFormSection] = useState("intake"); // intake | sensory
   const [msg, setMsg] = useState({ text: "", type: "" });
   const [submitting, setSubmitting] = useState(false);
+const [submitResult, setSubmitResult] = useState(null); // {success:bool, patientName, message}
   const [sheetUrl, setSheetUrl] = useState(DEFAULT_SHEET_URL);
   const [showConfig, setShowConfig] = useState(false);
   const [photoPatientId, setPhotoPatientId] = useState("");
@@ -3266,15 +3273,36 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         }
       } catch(e) { sheetErr = e.toString(); }
     }
-    setSubmitting(false);
+   setSubmitting(false);
+    var submittedName = patientName; // capture before clearing
     if (sheetOk) {
-      flash("Saved + Sheet + Docs created · photos auto-cleared" + sheetErr, "ok");
+      setSubmitResult({
+        success: true,
+        patientName: submittedName,
+        message: "Saved to Sheet + Drive docs created" + (sheetErr || "")
+      });
+      // Clear form for next patient on confirmed success
+      setForm(defaultState);
+      setPhotoPatientId("");
+      setPatientName("");
     } else if (sheetUrl) {
-      flash("Submit failed: " + sheetErr + " · photos kept locally, retry", "err");
+      // Hard fail: keep form and name so MA can retry without re-entry
+      setSubmitResult({
+        success: false,
+        patientName: submittedName,
+        message: "Submit failed: " + sheetErr + ". Form kept for retry."
+      });
     } else {
-      flash("Saved locally (no script URL).", "warn");
+      // No script URL configured — local save, treat as success
+      setSubmitResult({
+        success: true,
+        patientName: submittedName,
+        message: "Saved locally (no script URL)."
+      });
+      setForm(defaultState);
+      setPhotoPatientId("");
+      setPatientName("");
     }
-    setPatientName(""); // clear name after submit, it's in the directory now
   }
 
   // Directory functions (local only, never exported)
@@ -5106,7 +5134,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     return (
                       <div key={side} className="bg-white rounded p-2 border border-gray-200">
                         <div className="text-xs font-semibold text-gray-600 mb-1">{side} leg</div>
-                        <Stopwatch />
+                        <Stopwatch onStop={function(sec){set(secKey, sec.toFixed(1))}} />
                         <div className="grid grid-cols-2 gap-1 mt-1">
                           <input className={ic} type="number" step="0.1" value={form[secKey]} onChange={function(e){set(secKey,e.target.value)}} placeholder="sec" />
                           <select className={ic} value={form[fallKey]} onChange={function(e){set(fallKey,e.target.value)}}>
@@ -5125,11 +5153,8 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               var key = "walkTime" + props.phase;
               return (
                 <div className="grid grid-cols-2 gap-2 items-start">
-                  <Stopwatch />
+                 <Stopwatch onStop={function(sec){set(key, sec.toFixed(1))}} />
                   <input className={ic} type="number" step="0.1" value={form[key]} onChange={function(e){set(key,e.target.value)}} placeholder="time (sec)" />
-                </div>
-              );
-            }
             // Stereognosis block: Q / D / P selects
             function StereoBlock(props) {
               return (
@@ -5171,11 +5196,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               </PhaseBanner>
 
               <StepCard num="1" title="10m Walk" sub="shoes on">
-                <WalkBlock phase="Pre" />
+                {WalkBlock({phase:"Pre"})}
               </StepCard>
 
               <StepCard num="2" title="Single Leg Stance" sub="shoes on · eyes closed · max 45s">
-                <SlsBlock phase="Pre" />
+                {SlsBlock({phase:"Pre"})}
               </StepCard>
 
               <StepCard num="3" title="Monofilament" sub="shoes off · L then R">
@@ -5191,7 +5216,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               </StepCard>
 
               <StepCard num="5" title="HRV & Pain" sub={isD90 ? "" : "baseline before activation"}>
-                <HrvBlock phase="Pre" />
+                {HrvBlock({phase:"Pre"})}
               </StepCard>
 
               {/* ━━━ POST (D0 and D20 only) ━━━ */}
@@ -5202,7 +5227,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   <PhaseBanner phase="post">POST-ACTIVATION</PhaseBanner>
 
                   <StepCard num="6" title="HRV & Pain" sub="immediately after activation — captures acute vagal response">
-                    <HrvBlock phase="Post" />
+                    {HrvBlock({phase:"Post"})}
                   </StepCard>
 
                   <StepCard num="7" title="Stereognosis" sub="0–3 correct">
@@ -5218,11 +5243,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                   </StepCard>
 
                   <StepCard num="9" title="Single Leg Stance" sub="shoes back on · eyes closed · max 45s">
-                    <SlsBlock phase="Post" />
+                    {SlsBlock({phase:"Post"})}
                   </StepCard>
 
                   <StepCard num="10" title="10m Walk" sub="shoes on">
-                    <WalkBlock phase="Post" />
+                    {WalkBlock({phase:"Post"})}
                   </StepCard>
                 </React.Fragment>
               )}
@@ -5428,6 +5453,33 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         </div>
       )}
 
+      {/* ========== SUBMIT RESULT MODAL ========== */}
+      {submitResult && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-6"
+             onClick={function(){setSubmitResult(null)}}>
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl"
+               onClick={function(e){e.stopPropagation()}}>
+            <div className={"text-6xl mb-3 " + (submitResult.success ? "text-green-600" : "text-red-600")}>
+              {submitResult.success ? "✓" : "✗"}
+            </div>
+            <div className={"text-xl font-bold mb-1 " + (submitResult.success ? "text-green-700" : "text-red-700")}>
+              {submitResult.success ? "Submitted" : "Submit failed"}
+            </div>
+            {submitResult.patientName && (
+              <div className="text-base text-gray-800 mb-1">{submitResult.patientName}</div>
+            )}
+            <div className="text-sm text-gray-500 mb-5">{submitResult.message}</div>
+            <button onClick={function(){setSubmitResult(null)}}
+              className={"w-full py-3 rounded-lg text-base font-semibold text-white " +
+                (submitResult.success ? "bg-green-600 active:bg-green-700" : "bg-red-600 active:bg-red-700")}>
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ========== DUPLICATE REFERRAL MODAL ========== */}
+      {dupModal && dupModal.existing && (
       {/* ========== DUPLICATE REFERRAL MODAL ========== */}
       {dupModal && dupModal.existing && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(){setDupModal(null)}}>
