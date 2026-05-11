@@ -5148,16 +5148,18 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 </div>
               );
             }
-            // 10m walk block: one stopwatch, one time input
+// 10m walk block: one stopwatch, one time input
             function WalkBlock(props) {
               var key = "walkTime" + props.phase;
               return (
                 <div className="grid grid-cols-2 gap-2 items-start">
-                 <Stopwatch onStop={function(sec){set(key, sec.toFixed(1))}} />
+                  <Stopwatch onStop={function(sec){set(key, sec.toFixed(1))}} />
                   <input className={ic} type="number" step="0.1" value={form[key]} onChange={function(e){set(key,e.target.value)}} placeholder="time (sec)" />
+                </div>
+              );
+            }
             // Stereognosis block: Q / D / P selects
-            function StereoBlock(props) {
-              return (
+            function StereoBlock(props) {              return (
                 <div className="grid grid-cols-3 gap-2">
                   <div><label className={lc}>Quarter</label><select className={ic} value={form["coinQuarter"+props.phase]} onChange={function(e){set("coinQuarter"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
                   <div><label className={lc}>Dime</label><select className={ic} value={form["coinDime"+props.phase]} onChange={function(e){set("coinDime"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
