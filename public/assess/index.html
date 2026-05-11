@@ -5159,7 +5159,8 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               );
             }
             // Stereognosis block: Q / D / P selects
-            function StereoBlock(props) {              return (
+            function StereoBlock(props) {              
+	return (
                 <div className="grid grid-cols-3 gap-2">
                   <div><label className={lc}>Quarter</label><select className={ic} value={form["coinQuarter"+props.phase]} onChange={function(e){set("coinQuarter"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
                   <div><label className={lc}>Dime</label><select className={ic} value={form["coinDime"+props.phase]} onChange={function(e){set("coinDime"+props.phase,e.target.value)}}><option value="">--</option><option>Yes</option><option>No</option></select></div>
@@ -5480,8 +5481,6 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         </div>
       )}
 
-      {/* ========== DUPLICATE REFERRAL MODAL ========== */}
-      {dupModal && dupModal.existing && (
       {/* ========== DUPLICATE REFERRAL MODAL ========== */}
       {dupModal && dupModal.existing && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={function(){setDupModal(null)}}>
