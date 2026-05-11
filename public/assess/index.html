@@ -3707,7 +3707,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     Parsing referral... (~15s)
                   </span>
                 ) : "Snap Referral Sheet(s) — pick one or many"}
-                <input type="file" accept="image/*" multiple onChange={handleReferralPhotoCapture}
+                <input type="file" accept="image/*,application/pdf" multiple onChange={handleReferralPhotoCapture}
                   disabled={referralParsing} className="hidden" />
               </label>
 
