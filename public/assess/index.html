@@ -3416,7 +3416,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     if (!pid) return ["Study ID required"];
     if (!patientName) return ["Patient name required (local only, for directory mapping)"];
     // Phone Intake uses Generate Preauth, not Submit. Block Submit path explicitly.
-    if (form.visitType === "Phone Intake") return ["Phone Intake saves via the Generate Preauth button, not Submit. Switch Visit Type to D0 when ready for the implant."];
+    if (form.visitType === "Phone Intake") return ["Phone Intake doesn't submit. Use the Save Draft button to save your work, then Generate Preauth when ready. Do not change Visit Type — D0 is reserved for implant day."];
 
     var patientPhotos = pid ? getPhotosForPatient(pid) : [];
     var photoTypes = patientPhotos.map(function(p) { return p.type; });
@@ -3475,7 +3475,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     // Hard-block Phone Intake from the Submit path. This catches override attempts
     // that bypass validateForm. Phone Intake must use Generate Preauth.
     if (form.visitType === "Phone Intake") {
-      flash("Phone Intake must use Generate Preauth. Switch Visit Type to D0 for implant day.", "err");
+     flash("Phone Intake must use Generate Preauth. Do not switch Visit Type — D0 is for implant day only.", "err");
       return;
     }
     setSubmitting(true);
