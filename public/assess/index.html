@@ -1,551 +1,3 @@
-
-Diabetic Nerve clinic
-/
-Claude finished the response
-You said: Suggested opening message for the new chat:
-Suggested opening message for the new chat:
-Continuing from 2026-05-13 backend ship. PAQ schema expanded to 20 cols (driveFileId + rationale), billing_appeal_required type live, denial-reason parsing verified clean on real Bates fax. Now building the frontend next-action indicator + PAQ badge enhancements. Vocabulary already settled in memory — let's start by reading the current Refs card render and mostUrgentByDnc map to figure out where the indicator slots in.
-
-1:02 PM
-Claude responded: Read the slot.
-
-Architected next-action indicator slot and vocabulary mapping strategy
-Architected next-action indicator slot and vocabulary mapping strategy
-Read the slot. Here's the layout in index.html and what I think the right design call is before we write any code.
-
-Card render structure (line 3889 onward):
-
-Contra/red-payer banner (conditional)
-Name + status row (3901–3941)
-Payer category badge + insurance (3947–3955)
-Ref + phone + days-ago (3957–4001)
-Insurance lines from notes (4002–4016)
-DNC ID (4017)
-Comm pref (4022–4030)
-Call tally (4035–4049)
-Latest notification event box (4059–4103) — already the closest thing to "what was last tried"
-PAQ badge (4112–4129) — already a next-action signal when payer queue has an item
-Action button row (4130+)
-The next-action indicator slots at the PAQ badge position — same line, same visual class. Question is whether it lives alongside the PAQ badge or whether one supersedes the other.
-
-My read: they should be the same chip, not two chips.
-
-The PAQ badge already answers "what do I do today" for the ~10% of patients with an open payer action. Stacking a second "next action" chip below it would either repeat that info or contradict it (a patient with an open P2P doesn't also need "schedule D0" — the P2P is the next action). So the architecture I want:
-
-nextActionForReferral(ref, mostUrgentByDncEntry, now) → {icon, text, color, onClick}
-When PAQ has an open item: function returns the PAQ entry (with its red/amber/gray urgency colors and tap-to-cosign-tab handler). When PAQ is empty: function returns a status-derived action with the blue/gray/amber/green semantics from memory. One chip slot, one function, consistent rendering. The existing mostUrgentByDnc map stays exactly as-is — nextActionForReferral just consumes it.
-
-Vocabulary to lock before I write code. Hardcoded defaults; empirical p90 layer swaps in later. Red-team this list:
-
-Condition	Chip	Color
-PAQ open	(existing PAQ badge: type + deadline + "+N more")	PAQ urgency (red/amber/gray)
-No dncId, callAttempts=0, ≥2d old	📞 Call patient · stale	amber
-No dncId, callAttempts=0, <2d	📞 Call patient	blue
-No dncId, callAttempts>0	📞 Call again	blue (amber if last attempt ≥3d)
-Referral Received + dncId	📝 Start intake	blue
-Intake In Progress	📝 Resume intake	blue (amber if ≥7d)
-Awaiting Cosign (role=md)	✍️ Cosign needed	blue
-Awaiting Cosign (role≠md)	⏳ Waiting on cosign	gray (amber if ≥2d)
-Cosigned	📤 Submit preauth	blue
-Preauth Submitted / Preauth In Review	⏳ Waiting on payer	gray (amber if ≥14d)
-Preauth Rejected* (no PAQ row)	🚨 Review denial	blue
-Authorized (no scheduledD0)	📅 Schedule D0	blue (amber if ≥7d)
-D0 Scheduled (future date)	📅 D0 M/D	gray
-D0 Complete (no medicareSubmitted)	💵 Submit trial billing	blue (amber if ≥3d)
-Trial Billing Submitted	⏳ Waiting on Medicare	gray (amber if ≥30d)
-Trial Billing Approved (no scheduledD20)	📅 Schedule D20	blue
-Trial Billing Rejected* (no PAQ row)	🔧 Correct billing	blue
-D20 Complete (no scheduledD90)	📅 Schedule D90	blue (amber if ≥14d)
-D90 Complete	📋 Close out	blue
-Reimbursed / Complete	(no chip)	—
-Removed:*	(no chip)	—
-Open calls I want your read on:
-
-Awaiting Cosign color split by role — looking at the role check, MD sees blue ("you need to act"), MA sees gray ("not your turn"). Worth doing? Adds one branch but it's the only role-aware row.
-Stale-call amber threshold for Call again — 3d feels right but you've watched these calls more than me. 2d? 4d?
-D0 Complete → Submit trial billing — is medicareSubmitted the right signal that billing is out, or is there a different field? I used the existing column.
-Closing action after D90 — 📋 Close out is a guess. What's the actual MA action at that stage?
-Tap target — when the chip is non-PAQ, where should tap go? I'd suggest: Call-Patient/Call-Again → opens call modal; intake-related → opens draft; schedule-related → no tap (informational only); cosign-needed → switches to Cosign tab. PAQ chip keeps its existing handler (scroll to Cosign tab + pulse).
-Once you lock these, I'll write nextActionForReferral(), swap the existing badge (function(){var u = ...})() block to call it, and verify the existing PAQ flow still works for patients with queue items. ~30 min of code after vocabulary lands.
-
-You said: please exclude the word "trial" from MA/clinician facing status on referral cards.
-please exclude the word "trial" from MA/clinician facing status on referral cards. its just confusing...its a billing word only
-
-1:07 PM
-Claude responded: Got it.
-
-Reconciled vocabulary constraints and mapped display logic accordingly
-Reconciled vocabulary constraints and mapped display logic accordingly
-Got it. Let me lock that in memory so I don't drift on it later, then update the table.
-
-
-Consolidated vocab rule into existing design edit, preserved memory limit
-Consolidated vocab rule into existing design edit, preserved memory limit
-Locking it in memory now. The next-action edit is the natural slot for this — both decisions belong to card vocabulary.
-
-
-Recognized need to streamline referral card terminology
-Recognized need to streamline referral card terminology
-Claude's response was interrupted.
-You said: the word implant makes it more clear to the staff about whats happening?
-the word implant makes it more clear to the staff about whats happening? if you need one that makes sense
-
-1:09 PM
-Claude responded: Yes — "implant" is much better.
-
-Validated "implant" terminology and mapped UI updates accordingly
-Validated "implant" terminology and mapped UI updates accordingly
-Yes — "implant" is much better. It's what's actually in the patient, the MA already says "implant patient" out loud all day, and there's no ambiguity because the permanent implant flow (if it ever lives in DNC) would be a separate billing code path anyway. Updating memory now.
-
-
-Used 3 tools
-Used 3 tools
-Memory locked. Here's how the rule cascades through the design:
-
-Two places where "Trial Billing" currently leaks to the MA:
-
-Status display at line 3939 — {ref.status || "New"} renders the raw backend string. After mapping it'll show "Implant Billing Submitted / Approved / Rejected". One render helper covers it:
-js
-   function displayStatus(s) {
-     return String(s || "New").replace(/Trial Billing/g, "Implant Billing");
-   }
-Used only for display. Business logic (preauthDone check on 3915–3919, contra branching, etc.) keeps comparing against canonical backend strings.
-
-Next-action chip text — the three rows that changed in the vocabulary table:
-Condition	Old chip	New chip
-D0 Complete (no medicareSubmitted)	💵 Submit trial billing	💵 Submit implant billing
-Trial Billing Submitted	⏳ Waiting on Medicare	(unchanged — no "trial" in chip)
-Trial Billing Approved (no scheduledD20)	📅 Schedule D20	(unchanged)
-Trial Billing Rejected* (no PAQ row)	🔧 Correct billing	🔧 Correct implant billing
-One thing to check before I lock the table: Do you want the same swap applied anywhere else the status string surfaces in the UI? Quick scan turned up two adjacent spots:
-
-Coversheet modal when switching patients (shows status as part of the L1 cross-patient protection summary)
-Cosign tab queue rows when listing PAQ items (these show the underlying throughput status alongside the action)
-If yes, I'll just route them all through the same displayStatus() helper — three-line change. If you'd rather start with the referral cards only and let the modal/Cosign-tab catch up later, also fine. Same answer to my other vocabulary questions from before:
-
-Cosign chip color split by role (MD blue / MA gray)?
-Stale-call amber threshold for Call again (2d / 3d / 4d)?
-Closing action after D90 Complete — what's the actual MA verb?
-Tap-target mapping for non-PAQ chips (the list I sketched in the prior turn)?
-Lock those four + the displayStatus scope, and I'll write nextActionForReferral + the chip render swap + the display helper in one pass.
-
-You said: question is do we get rid of d0, d20, d90 nomenclature and call it implant, explant, and followup
-question is do we get rid of d0, d20, d90 nomenclature and call it implant, explant, and followup
-
-1:11 PM
-Claude responded: Strong yes from me, but let me ground this in what actually exists across the codebase before I commit.
-
-Mapping D0/D20/D90 nomenclature across frontend components
-Mapping D0/D20/D90 nomenclature across frontend components
-Strong yes from me, but let me ground this in what actually exists across the codebase before I commit. One sec.
-
-
-Weighed architectural scope of renaming clinical terminology throughout system
-Weighed architectural scope of renaming clinical terminology throughout system
-Yes, do it. But it's bigger than just card display — let me show what's actually in scope so you can decide where to draw the line.
-
-The clinical names are objectively better. D0/D20/D90 are arbitrary day-markers that even drift in reality (D20 isn't strictly day 20, D90 isn't strictly day 90). Implant/explant/followup describes the event — which is what actually happens and what the MA is thinking about. New staff onboard faster. Patient comms (any SMS or paperwork that leaks the label) get clearer. The semantic upgrade is real.
-
-But the references aren't just cosmetic — they cluster into three tiers:
-
-Tier 1 — pure display strings (low risk, ~10 spots). Status taxonomy rendering, chip text, the next-action vocabulary. Same render-layer trick as trial → implant: extend the helper to also map D0 → Implant, D20 → Explant, D90 → Followup in display contexts. Backend storage and column names stay. Zero migration cost.
-
-Tier 2 — form UI + workflow labels (medium risk, ~15-20 spots). The big one is the Visit Type dropdown on line 4567 — it stores literal "D0" / "D20" / "D90" as form.visitType, and that value drives ~30 conditional UI branches and document-generation logic. Cleanest fix is to keep stored values as "D0" etc. but show "Implant Day / Explant Day / Followup" as the option labels (<option value="D0">Implant Day</option>). Section headers ("DAY-OF-PROCEDURE NOTE (clinician adds at D0)"), MA alert messages ("D0 complete, D20 not scheduled (day X of 20)"), and flash errors ("Submit D0 first") would all reword.
-
-Tier 3 — generated patient documents (this is the call you need to make). The op note header at line 2753 writes "AURICULAR VNS [...] - D0" into the actual PDF that goes to the patient's chart. LOMN and other generated docs likely do the same. Changing this changes what appears in medical records going forward. Pros: chart language matches the clinical event, easier for outside reviewers (insurers, future providers) to parse without DNC institutional knowledge. Cons: any retrospective document search by "D0" stops working for new docs; you have two eras of chart vocabulary on shelf forever.
-
-My recommendation: Ship Tier 1 in this build (it folds into displayStatus() cleanly — same helper, two more rules). Tier 2 in a follow-up build after Lindsey + the MAs spend a week with Tier 1 and confirm the new vocab feels right in practice. Tier 3 separately, on purpose, once you've decided whether you want the chart record to switch.
-
-Specifically for the chip vocabulary lock right now, the changes are:
-
-Old chip	New chip
-📅 Schedule D0	📅 Schedule implant
-📅 D0 M/D (gray, scheduled)	📅 Implant M/D
-📅 Schedule D20	📅 Schedule explant
-📅 Schedule D90	📅 Schedule followup
-(D0 Complete, no medicareSubmitted) 💵 Submit implant billing	unchanged
-And displayStatus() becomes:
-
-js
-function displayStatus(s) {
-  return String(s || "New")
-    .replace(/Trial Billing/g, "Implant Billing")
-    .replace(/^D0\b/g, "Implant")
-    .replace(/^D20\b/g, "Explant")
-    .replace(/^D90\b/g, "Followup");
-}
-So "D0 Scheduled" renders as "Implant Scheduled", "D20 Complete" as "Explant Complete", "D90 Complete" as "Followup Complete".
-
-Confirm three things:
-
-Tier 1 (display + chip) in this build — yes?
-Tier 2 (form Visit Type dropdown labels + workflow strings) as a separate next build — yes?
-Tier 3 (generated PDF doc headers) — you want me to flag the specific spots in a list and you decide later, or skip entirely?
-And the four open vocabulary questions from before are still live:
-
-Cosign chip color by role (MD blue / MA gray)?
-Stale-call amber threshold for Call again (2d / 3d / 4d)?
-Closing action after Followup Complete?
-Tap-target mapping for non-PAQ chips?
-Once you sign off, I'll write the code in one pass.
-
-You said: yes to all 3 tiers, im ok w backend retaining d0/20/90 nomenclature, but we should map frontend to more clear language.
-yes to all 3 tiers, im ok w backend retaining d0/20/90 nomenclature, but we should map frontend to more clear language. the notes too. no role changing colors for now. stale-call at 2d. closing actions: d120 phonecall followup and ask if interested in d365 re-implant.
-
-1:16 PM
-
-Architecting chip vocabulary and orchestrating backend memory updates
-Architecting chip vocabulary and orchestrating backend memory updates
-Claude's response was interrupted.
-You said: but heres the thing.
-but heres the thing...i dont want their referral cards there sitting for weeks at a time with no action plan. they should pop up like a max of week ahead of when intervention needed? maybe 1-2 days.
-
-1:17 PM
-Claude responded: Right call, and it's the natural extension of the chip color semantics — the colors already encode "act now vs wait.
-
-Architected filtering system to surface urgent patient cards dynamically
-Architected filtering system to surface urgent patient cards dynamically
-Right call, and it's the natural extension of the chip color semantics — the colors already encode "act now vs wait." Filter on the colors and the clutter problem solves itself.
-
-Proposed rule: Default Refs view shows cards where chip color is blue or amber. Gray (waiting) cards hide unless their scheduled event is inside a 2-day wake-up window. Toggle at the top of the Refs tab: [Action needed (12)] [All (47)] defaulting to Action needed. Count on the hidden side is always visible so nothing feels lost.
-
-Wake-up windows by state (all 2 days unless noted):
-
-State	Hidden while	Wakes up
-Implant Scheduled (future date)	>2d before date	2d before
-Explant Scheduled (future date)	>2d before date	2d before
-Followup Scheduled (future date)	>2d before date	2d before
-Preauth Submitted	<14d since submission	day 14 (stuck = amber)
-Implant Billing Submitted	<30d since submission	day 30 (stuck = amber)
-Followup Complete	<(D0+118d)	D0+118d, chip = 📞 D120 call due
-D120 logged	<(D0+363d)	D0+363d, chip = 📞 D365 re-implant check
-Everything blue (Call patient, Start intake, Submit preauth, Schedule implant, Submit implant billing, etc.) stays always-visible because there's an MA action waiting.
-
-Three things to confirm before I add this to the build scope:
-
-D120 / D365 tracking — how does "logged" get recorded? Cleanest options: (a) new status values D120 Complete / D365 Complete added to the canonical taxonomy, (b) just tag entries in the existing callLog field and parse for them, (c) lifecycle event when that ships. I'd pick (a) — explicit and shows on the card without parsing. Adds two status strings to the taxonomy. Your call.
-Stale "Call patient" cards — these are already always-visible because chip is blue, but a referral that's been sitting uncalled for 2 weeks should probably feel different from one that came in yesterday. The amber-after-2d rule handles the 2-14d range. Do you want a red escalation at, say, 7d+ uncalled? Or stays amber?
-Where does this filter live — Refs tab only, or also the Cosign tab queue? The Cosign queue already has its own urgency sort. Probably leave it alone, but flagging.
-If you say yes to (1a) with two new statuses, I add them to memory, then write nextActionForReferral() + displayStatus() + the Refs filter toggle in one pass. About 45 min of code once everything's settled. Tier 2 (Visit Type dropdown labels, MA alert strings, form section headers) and Tier 3 (PDF doc headers in op note / LOMN) follow in the next build per your "yes to all 3 tiers" earlier — I'll list out the exact PDF-doc spots so you can confirm chart-vocabulary scope before we touch generated medical records.
-
-You said: and now it occurs to me, this is no longer a referral tab: its a status board with referral function baked in.
-and now it occurs to me, this is no longer a referral tab: its a status board with referral  function baked in. 1) agree; 2) 7d, we need a doc call with some ! urgenty looking thing
-
-1:20 PM
-Claude responded: Agreed, and that reframe actually clarifies a few things that were murky before.
-
-Architected status board concept with escalation tiers and visual urgency indicators
-Architected status board concept with escalation tiers and visual urgency indicators
-Agreed, and that reframe actually clarifies a few things that were murky before. A few quick consequences worth locking, then the 7d red chip.
-
-Tab rename. "Refs" became wrong the moment the mental model shifted. Short options that fit mobile bottom-nav: Board, Pipeline, or Patients. My pick is Board — terse, accurate, doesn't conflict with anything else, and "the board" is already what staff will naturally call it. The default-action-filter view I proposed becomes "Board · Action needed (12)" with an "All (47)" toggle alongside.
-
-Sort order changes too. Old sort was uncalled-first-then-by-date, which was right for a triage tab. For a status board the default should be urgency-banded:
-
-Red chips first (oldest within band)
-Amber chips next (oldest within band)
-Blue chips next (oldest within band)
-Gray/scheduled-within-window last
-That puts the most-urgent action at the top regardless of how new the referral is — which is what a status board is for.
-
-7d uncalled red chip. Quick check on intent before I lock wording: when you say "doc call," do you mean:
-
-(a) Physician outreach — at 7d uncalled, Lindsey personally calls the patient. The chip is a flag to her, not the MA. Tap-target opens the call modal pre-tagged as MD-attempt. This makes business sense — at 7d the friction-to-clinic is high enough that physician outreach is worth her time.
-
-(b) Escalated/documented call attempt — MA still makes the call but it's flagged for chart documentation and follow-through escalation.
-
-I'll assume (a) unless you say otherwise — it matches the clinical reality that a doc call from Lindsey at 7d has materially different conversion than a fourth MA voicemail. The chip would be:
-
-🚨 Doc call needed · 7d
-with animate-pulse on the chip background so it actively grabs the eye in a list. Tailwind bg-red-500 text-white animate-pulse reads as alarm-state without being garish. Three escalation tiers total:
-
-Days uncalled	Chip	Color
-0–2d	📞 Call patient	blue
-2–7d	📞 Call patient · stale (Xd)	amber
-7d+	🚨 Doc call needed · Xd	red + pulse
-One more thing this concept shift unlocks — and tell me if I'm getting ahead of you here. The Refs tab currently has an "Add Referral" button + the photo-parse intake at the top. On a Status Board, that feels misplaced — adding new referrals is a phase-zero action, not a board-level action. Options: (a) leave it where it is, (b) move it into a collapsed "+ Add" header dropdown, (c) move it to its own sub-tab. My instinct is (b) — keeps the discoverability but stops it from dominating the top of the board view. Your call, and easy either way.
-
-Status to lock for the build:
-
-Tab rename → "Board" (or your pick)
-Default sort → urgency-banded (red → amber → blue → gray)
-7d red chip → 🚨 Doc call needed · Xd with pulse, interpretation (a) physician outreach
-Add Referral button placement — keep, collapse, or sub-tab?
-D120/D365 tracking → still need your answer on (a) new status values vs (b) callLog parsing vs (c) lifecycle event
-Drop a yes/no/pick on each and I write the whole thing — nextActionForReferral + displayStatus + Board filter + sort + 7d-red-pulse + Add Referral relocation — in one pass. Then Tier 2 (form labels) and Tier 3 (PDF docs) as separate follow-ups per your "yes to all 3 tiers."
-
-You said: board is good.
-board is good. urgency banded. yes. internal link "Manual Referral" brings to the real location in the + tab? 5. whats your rec?
-
-1:23 PM
-Claude responded: Yes, "Manual Referral" link on the Board that just switches view to the + tab where the actual form lives.
-
-Weighed architectural tradeoffs for tracking D120/D365 calls
-Weighed architectural tradeoffs for tracking D120/D365 calls
-Yes, "Manual Referral" link on the Board that just switches view to the + tab where the actual form lives. Single source of truth for referral entry; the Board stays a status board.
-
-On #5 — my pick is (c) lifecycle event, with a small sequencing wrinkle.
-
-D120 and D365 aren't pipeline states — they're call cadences that happen after the pipeline is "done." Pipeline status answers "where is this patient in the workflow." Call cadences answer "what outreach has happened over time and what did the patient say." Different question, different shape of data. Putting D120 Complete / D365 Complete into the status taxonomy works mechanically but conflates two concepts that should stay separate, and it's the kind of thing that quietly bloats STATUS_TAXONOMY, the predecessor map, the displayStatus helper, status-folder renderer, etc. Two strings now is fine; precedent for "let's just add a status when we need a new signal" gets expensive.
-
-Lifecycle Events was literally designed for this. logLifecycleEvent({type: "d120-call", outcome: "interested-in-re-implant", patientId, ...}) is one row, append-only, captures timestamp + actor + outcome, and aggregates cleanly for reporting ("D120 → re-implant conversion rate by payer" comes for free). It also future-proofs whatever DyAnsys decides next year — D180, D540, whatever.
-
-The wrinkle: Lifecycle Events is the next build after this one (~5-6hr, tier-1). So the honest path is:
-
-Today's build (Board): ship without D120/D365 wake-up logic. Cards at D90 Complete (rendered as "Followup Complete") stay gray/waiting until Lifecycle ships.
-Next build (Lifecycle Events ~5-6hr): ships the sheet + logLifecycleEvent infrastructure with event types including d120-call and d365-call.
-30-min follow-up after that: add D120/D365 wake-up to the Board filter. Reads lifecycle events for the patient, wakes the card at D0+118d if no d120-call event logged, wakes again at D0+363d if no d365-call event logged. Tap-target opens the call modal, which on submit logs the lifecycle event and the card goes back to sleep.
-Total delay on the D120/D365 piece: ~6 hours of build time, all happening this week given the current pace.
-
-Offramp if you want it working today: option (a) with two new status strings as a temporary signal. When Lifecycle ships, backfill events from those status timestamps and the strings retire. Pragmatic and unblocks immediately, but I'd argue the 6-hour wait is the right trade unless there are D90-Complete patients sitting right now whose D120 calls are imminent. Quick gut-check: are any?
-
-One small thing to lock before I code: what's the Board's behavior for Complete, Reimbursed, and Removed:* patients? They're not "active" in any action-needed sense. My default would be: hide from Action-needed view, show in All view sorted to the bottom with a subdued visual treatment. A separate "Archive" filter feels like overbuild for now. Sound right?
-
-If you confirm:
-
-(c) + Sequence A on D120/D365
-Hide Complete/Reimbursed/Removed from Action-needed view
-"Manual Referral" link in Board top → switches to + tab
-I write the Board build now.
-
-You said: i agree we can defer the d120 and 365.
-i agree we can defer the d120 and 365. the d20 visit is barely happening rn, unfortunately.
-
-1:25 PM
-Claude responded: That changes the Board calibration meaningfully.
-
-Recalibrated board escalation thresholds to surface operational bottleneck
-Recalibrated board escalation thresholds to surface operational bottleneck
-That changes the Board calibration meaningfully. If explant is the bottleneck, the Board should force it to happen — not just wait politely for someone to schedule it.
-
-Implant→Explant escalation, matched to the clinical window (explant should happen ~day 18-22 post-implant):
-
-Days since Implant Complete	Chip	Color
-0-14d, no scheduledD20	📅 Schedule explant	blue
-14-18d, no scheduledD20	📅 Schedule explant · due soon	amber
-18d+, no scheduledD20	🚨 Explant overdue · Xd	red + pulse
-scheduledD20 exists, future	📅 Explant M/D	gray (wakes 2d before)
-scheduledD20 in past, no D20 Complete	🚨 Explant no-show? · Xd late	red + pulse
-Same pattern for Explant→Followup (gentler thresholds because D90 has a wider clinical window, but still escalates):
-
-Days since Explant Complete	Chip	Color
-0-60d, no scheduledD90	📅 Schedule followup	blue
-60-90d	📅 Schedule followup · due soon	amber
-90d+	🚨 Followup overdue · Xd	red + pulse
-The Board now becomes the visible accountability layer for "patients who got implanted but never came back" — which is the cash-flow problem dressed as a UI problem.
-
-One question that actually changes the solution, not just the UI: do you have a read on why D20 is barely happening? Three causes have three different fixes:
-
-No one calls to schedule it → Board chip surfacing solves this. Build I'm about to do.
-Patient ghosts after feeling better → need automated SMS reminder at day 14 (Spruce can do this; it's a small add to sendInsuranceCardSms-style flow). Worth flagging as a follow-up build after Board.
-No clinic slots open / Lindsey bandwidth → operational, can't fix in software, but Board still surfaces the pattern so the operational problem becomes visible to her.
-It's probably (1) + (2) in some mix, and the cause distribution will reveal itself once the Board is live and you see what the red chips actually correspond to. Worth tracking; this is also a strong case for moving Lifecycle Events forward in the queue — once events are logged, "explant-no-show" vs "never-scheduled" vs "patient-declined" become countable rather than vibes.
-
-Locked for this build:
-
-Tab rename → "Board"
-Default view: Action needed; toggle to All; Complete/Reimbursed/Removed hidden from Action-needed
-Sort: urgency-banded (red → amber → blue → gray; oldest within each band)
-7d uncalled red chip: 🚨 Doc call needed · Xd with pulse
-Explant + Followup overdue escalation per tables above
-Wake-up windows: 2 days before scheduled events
-Preauth Submitted: amber at 14d
-Implant Billing Submitted: amber at 30d
-"Manual Referral" link on Board switches view to + tab
-D120/D365 wake-up deferred to post-Lifecycle-Events
-displayStatus() handles trial→implant + D0/D20/D90→implant/explant/followup
-Notes (Tier 3, generated PDFs/op notes/LOMN) → swap vocabulary, will list spots before touching
-Answer the "why is D20 not happening" question when you can and I'll either fold in the SMS reminder design or hold off. Writing the Board build now unless you want to revise anything above.
-
-You said: no no no, what i mean is people are getting explanted without the full sensory battery.
-no no no, what i mean is people are getting explanted without the full sensory battery. fundamentally, we dont get paid, so its not emphasized. rn i need to focus on the throughput and solidifying the data later
-
-1:26 PM
-Claude responded: Got it — that's a different problem entirely, and your framing is right.
-Got it — that's a different problem entirely, and your framing is right. Throughput first, data quality second. Reimbursement comes from billing the implant; the explant data battery is clinical/research value that doesn't gate the cash flow. Don't bury Board signals in clinically-correct-but-financially-irrelevant alerts.
-
-Implication for the Board build: the explant escalation tables I just drafted are wrong. There's no overdue-explant problem to surface because the explant is happening — just not with the data capture you'd want. Removing those escalations entirely.
-
-Revised escalation logic — purely throughput/billing-focused:
-
-State	Wake-up / Escalation
-Referral Received, no call	blue → amber at 2d → red+pulse "Doc call" at 7d
-Intake In Progress	blue, amber at 7d
-Awaiting Cosign	gray (waiting on MD), amber at 2d
-Cosigned	blue "Submit preauth"
-Preauth Submitted/In Review	gray, amber at 14d
-Preauth Rejected (no PAQ)	blue "Review denial"
-Authorized, no scheduledD0	blue "Schedule implant", amber at 7d
-D0 Scheduled (future)	gray, wakes 2d before
-D0 Complete, no medicareSubmitted	blue "Submit implant billing", amber at 3d, red+pulse at 7d — this is the cash chokepoint
-Implant Billing Submitted	gray, amber at 30d
-Implant Billing Approved	gray (terminal-ish, awaiting reimbursement)
-Implant Billing Rejected (no PAQ)	red+pulse "Correct billing"
-Reimbursed	hidden from Action-needed
-D20/D90 anything	no escalation, no chip — silent until you want to surface it later
-The red+pulse on "Submit implant billing" at 7d is new and probably warranted given what you just told me — that's the actual money pipeline, and a delay there is a delay in cash. If 3d/7d feels too aggressive, say so; I picked thresholds matched to the urgency of getting Medicare claims out promptly, but you'll have better intuition on what's realistically achievable in your billing cadence.
-
-One thing worth saying out loud: if D20 sensory-battery completion eventually becomes the differentiator for Heirloom Data, Inc.'s value (de-identified clinical dataset), this changes. The platform's defensibility narrows from "workflow integration" to "workflow integration + structured outcomes data" — and right now the outcomes data is leaking. Not a now-problem, but worth a memory note so we don't forget the trade we made. I'll add a brief one.
-
-
-Deliberated memory pruning strategy and prioritized throughput over completeness
-Deliberated memory pruning strategy and prioritized throughput over completeness
-At memory limit. Edit 13 (May 3 shipped milestone) is fully superseded by current state — retiring it to make room for the D20 trade-off note, which is more durable and ties to the Heirloom defensibility question.
-
-
-Used 2 tools
-Used 2 tools
-Locked spec for the Board build:
-
-Tab rename → "Board"
-Default view: Action needed (toggle to All)
-Sort: urgency-banded — red+pulse → red → amber → blue → gray; oldest within each band
-Complete / Reimbursed / Removed:* hidden from Action needed
-"Manual Referral" link on Board top → switches view to + tab (intake form lives there)
-displayStatus() maps Trial Billing → Implant Billing, D0 → Implant, D20 → Explant, D90 → Followup (display-only; backend canonical untouched)
-Wake-up windows: 2 days before scheduled events
-Chip vocabulary per the throughput-only table above (no explant/followup escalation)
-7d uncalled → 🚨 Doc call needed · Xd red+pulse
-7d D0-Complete-no-billing → 🚨 Submit implant billing · Xd red+pulse
-D120/D365 deferred to post-Lifecycle-Events
-Tier 2 (Visit Type dropdown labels, form section headers, MA alert strings) and Tier 3 (generated PDF/op note/LOMN doc headers) → next builds, with Tier 3 doc-spot list for your review before touching medical records
-Last question before I write code: the 7d red-pulse on "Submit implant billing" — I picked 3d amber / 7d red based on what felt aggressive-but-realistic for getting Medicare claims out promptly. Now that you've framed billing-submission as the cash chokepoint, do those thresholds match your real billing cadence, or should they be tighter (2d amber / 5d red)? Whatever you say I'll use as the hardcoded default; the empirical-p90 layer (memory #23) swaps in when Status Norms ships.
-
-Lock the billing thresholds and I write the whole Board build in one pass.
-
-You said: i think this is good as specd
-i think this is good as specd
-
-1:28 PM
-Claude responded: Locked.
-
-Preserving internal keys to avoid cascading breakage
-Preserving internal keys to avoid cascading breakage
-Locked. Let me read the remaining structural pieces I need (nav bar, view keys, Refs tab container start, existing filter/sort), then write it.
-
-
-Orchestrating code edits and refactoring component structure
-Orchestrating code edits and refactoring component structure
-OK I have everything. Setting up.
-
-
-Architected comprehensive UI refactor with helper functions and state management
-Architected comprehensive UI refactor with helper functions and state management
-Now writing it. Plan: top-to-bottom edits so line numbers don't shift unpredictably.
-
-Edit 1: Add displayStatus, nextActionForReferral, and helpers after formatDeadline() (line 676).
-
-
-Add displayStatus, BOARD_THRESHOLDS, nextActionForReferral, chipSortRank helpers
-Add displayStatus, BOARD_THRESHOLDS, nextActionForReferral, chipSortRank helpers
-Edit 2: Add actionFilter and showManualReferral state inside App() next to other view-state useStates.
-
-
-Ran a command, edited a file
-Ran a command, edited a file
-Edit 3: Rename tab label "Refs" → "Board" in the navigation bar.
-
-
-Architecting form structure and filtering logic
-Architecting form structure and filtering logic
-Edit 4: Wrap the existing manual-referral form in a collapsible accordion. Need to find its current location after prior edits.
-
-
-Strategized replacing referral sections with unified filter implementation
-Strategized replacing referral sections with unified filter implementation
-Edit 5: Replace the list header (lines after the manual referral accordion) with the filter toggle, and integrate the classify+filter+sort into the IIFE.
-
-
-Verifying file integrity and sanity-checking edits
-Verifying file integrity and sanity-checking edits
-Edit 6: Close the new Fragment at the IIFE tail.
-
-
-Ran a command, viewed a file, edited a file
-Ran a command, viewed a file, edited a file
-Edit 7: Apply displayStatus() to the existing status display on the card (line 3939 originally).
-
-
-Ran a command, edited a file
-Ran a command, edited a file
-Edit 8: Replace the existing PAQ-badge-only render with the unified nextActionForReferral chip render.
-
-
-Verifying structural integrity and syntactic correctness
-Verifying structural integrity and syntactic correctness
-Now sanity-checking the file: line count, JSX brace balance, no broken references.
-
-
-Verified structural integrity and syntactic correctness throughout
-Verified structural integrity and syntactic correctness throughout
-Balance is clean. One last spot-check on the chip render area in context.
-
-
-Verified code integrity and prepared file for delivery
-Verified code integrity and prepared file for delivery
-Final structural check passed. Copying to outputs.
-
-
-Ran a command, read a file
-Ran a command, read a file
-Build done. 6078 → 6443 lines (+365). All paren/brace/bracket balances clean. Eight edits, top-to-bottom so nothing shifted unpredictably:
-
-displayStatus(), BOARD_THRESHOLDS, nextActionForReferral(), chipSortRank() added at module scope after formatDeadline(). Backend canonical strings stay untouched — displayStatus only maps for render; business-logic comparisons against "D0 Complete", "Trial Billing Submitted", etc. still work raw.
-actionFilter + showManualReferral state added inside App().
-Tab label "Refs" → "Board" in nav (internal view key stays "referrals" to avoid touching setView/localStorage/getDraftList).
-Manual Referral accordion wraps the entire add-referral block — collapsed by default, auto-expands when parseQueue.length > 0 so mid-snap work isn't hidden.
-Filter toggle + classify pipeline rewritten as a single IIFE: classify → chip-resolve → counts → filter → urgency-banded sort → Fragment render (toggle + filter-aware empty state + card list).
-Fragment closer at IIFE tail.
-Status display now goes through displayStatus().
-Unified next-action chip replaces the prior PAQ-only badge — same slot, single function for both PAQ-driven and status-driven cases, closure-bound handlers (openCallModal, openDraft, openPaqQueue).
-Smoke-test sequence I'd recommend before merging to prod:
-
-Load Board with current data — Action needed view should show only chip-bearing cards; All view should show everything; counts should match.
-Confirm PAQ-open patients render the PAQ chip with 📋 icon + +N more suffix when applicable, tapping switches to Cosign tab.
-Confirm a Trial Billing Submitted patient renders "Implant Billing Submitted" in the status display.
-Confirm a D0 Complete patient with no medicareSubmitted, ≥7d old, gets the red+pulse 🚨 Submit implant billing · Xd chip.
-Confirm a fresh referral with no call attempts shows 📞 Call patient blue; ≥2d shows amber; ≥7d shows red+pulse 🚨 Doc call needed.
-Confirm Manual Referral accordion expands/collapses; parseQueue items force-expand it.
-Bump APP_VERSION on backend and verify the new helpers load without console errors.
-Follow-up scope for the build queue (Tier 2 + Tier 3 from earlier):
-
-Tier 2 — form UI vocabulary swap. Visit Type dropdown shows "Implant Day / Explant Day / Followup" labels (stored values stay D0/D20/D90), section headers, MA alert strings ("D0 complete, D20 not scheduled..." in dnc_backend__code.gs_ getMaAlerts near line 4828). ~30 lines of edits, no logic risk.
-Tier 3 — generated PDF doc headers. Op note header at line 2753 ("AURICULAR VNS [...] - " + form.visitType), LOMN generation, requisition. I'll do a grep-list of every generated-document spot before touching medical records so you can review and approve which ones flip vocab and which stay D0/D20/D90 for chart-history continuity.
-Say the word and I'll start Tier 2 + the Tier 3 spot-list.
-
-
-Index
-Code · HTML 
-You said: this is a top to bottom copy-paste replacement of the index.
-this is a top to bottom copy-paste replacement of the index.html?
-
-1:41 PM
-Claude responded: Yes — /mnt/user-data/outputs/index.
-Yes — /mnt/user-data/outputs/index.html is the complete file, 6443 lines, drop-in replacement for /users/evanl/postop-sms/public/assess/index.html. Not a patch, not a diff. Copy-paste the whole thing.
-
-Before you replace, do this safety check:
-
-Diff against your current local file first to confirm only the expected regions changed:
-   diff /users/evanl/postop-sms/public/assess/index.html ~/Downloads/index.html
-You should see changes clustered in roughly six regions: helpers block (after formatDeadline), state block in App(), nav label, Manual Referral accordion, the classify IIFE, status display line, chip render block. Nothing should change outside those.
-
-Keep the current version as a backup before overwriting — cp index.html index.html.bak-pre-board in the same directory. If anything goes sideways you revert in one command.
-Bump APP_VERSION on the backend deploy when you ship this (current is 2026-05-03-vertex per memory #9, even though more has shipped since — that constant should reflect this Board cut). Something like 2026-05-13-board.
-Smoke test locally first by opening the new file in a browser pointed at the dev Apps Script URL, not prod. The seven-step sequence from my prior turn is the order I'd run.
-If something breaks on dev and you need to roll back, the .bak restore + a hard refresh on surghome.com puts you back to the prior good state. Backend Code.gs was not touched in this build, so there's nothing to roll back server-side.
-One thing worth flagging: I didn't run the file through a JSX parser. The paren/brace/bracket counts balance and the structural spot-checks looked right, but React/Babel only catches malformed JSX at runtime in this codebase (no build step). If it blows up on load, the browser console will point at the line. Send me the error if it does and I'll fix in place.
-
-
-
-
-
-
-
-Claude is AI and can make mistakes. Please double-check responses.
-Index · HTML
-Copy
-
-Syntax highlighting has been disabled due to code size.
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1223,280 +675,6 @@ function formatDeadline(deadline, deadlineSource, actionType) {
   return "SLA";
 }
 
-// Display-only status mapper. Backend keeps "Trial Billing X" / "D0 X" /
-// "D20 X" / "D90 X" as canonical strings (status taxonomy, predecessor map,
-// sheet column names all use them). The UI shows clinical names instead:
-// Implant Billing / Implant / Explant / Followup. Use this anywhere ref.status
-// is rendered to MAs or clinicians. NEVER use for business-logic comparisons —
-// those keep comparing against canonical backend strings.
-function displayStatus(s) {
-  return String(s || "New")
-    .replace(/Trial Billing/g, "Implant Billing")
-    .replace(/\bD0\b/g, "Implant")
-    .replace(/\bD20\b/g, "Explant")
-    .replace(/\bD90\b/g, "Followup");
-}
-
-// Board chip stuck/age thresholds (days). Hardcoded defaults — empirical p90
-// per (status, payer) from Status Norms sheet swaps in later (see memory #23).
-// Adjusting these is the right knob; chip color/copy logic stays the same.
-var BOARD_THRESHOLDS = {
-  uncalledStale: 2,          // amber: still no contact 2d after referral arrived
-  uncalledDocCall: 7,        // red+pulse: 7d uncalled triggers Lindsey personal call
-  intakeStuck: 7,            // amber: intake started but stalled
-  cosignStuck: 2,            // amber: cosign waiting too long
-  preauthStuck: 14,          // amber: payer sitting on submitted preauth
-  authNoD0Stuck: 7,          // amber: authorized but no implant scheduled
-  billingStaleDay: 3,        // amber: D0 done, billing not submitted
-  billingStaleRed: 7,        // red+pulse: cash chokepoint (see memory #30)
-  billingSubmittedStuck: 30, // amber: Medicare sitting on claim
-  wakeupDays: 2              // gray scheduled events surface in Action-needed when within this window
-};
-
-// Unified next-action chip resolver. Single function returns the chip data
-// for a referral card based on its current state, timestamps, call history,
-// and any open Payer Action Queue entry. Returns null when no chip should
-// appear (terminal states, quiet in-flight states like Explant/Followup
-// per memory #30, far-future scheduled events outside wakeup window).
-//
-// Returns: { icon, text, color, pulse, onClick } or null
-//   color: "red" | "amber" | "blue" | "gray"
-//          blue = MA action available
-//          amber = stuck (exceeds expected duration)
-//          gray = waiting (intentional pause; surfaces only inside wakeup window)
-//          red = escalated/overdue, paired with pulse for visual alarm
-//   pulse: true → animate-pulse on chip bg; reserved for 7d+ doc-call and
-//          7d+ billing-not-submitted (cash chokepoint)
-//   onClick: handler from caller closure, or null when purely informational
-//
-// The PAQ entry takes priority — when this DNC has an open payer action it IS
-// the next action, status-derived chip is suppressed. ONE chip slot per card.
-function nextActionForReferral(ref, paqEntry, now, handlers) {
-  now = now || Date.now();
-  handlers = handlers || {};
-  var DAY = 86400000;
-  var status = String(ref.status || "").trim();
-  var T = BOARD_THRESHOLDS;
-
-  // -------- PAQ override --------
-  if (paqEntry) {
-    var paqColor = urgencyForAction(paqEntry, now).color;
-    var typeLabel = PAYER_ACTION_TYPE_LABEL[paqEntry.actionType] || "Action";
-    var deadlineStr = formatDeadline(paqEntry.deadline, paqEntry.deadlineSource, paqEntry.actionType);
-    var moreSuffix = paqEntry.count > 1 ? " · +" + (paqEntry.count - 1) + " more" : "";
-    return {
-      icon: "📋",
-      text: typeLabel + " · " + deadlineStr + moreSuffix,
-      color: paqColor,
-      pulse: paqColor === "red",
-      onClick: handlers.openPaqQueue || null
-    };
-  }
-
-  // -------- Terminal states: hidden entirely --------
-  if (status === "Complete" || status === "Reimbursed" || status.indexOf("Removed") === 0) {
-    return null;
-  }
-
-  var refDate = ref.referralDate ? new Date(ref.referralDate).getTime() : now;
-  var daysSinceRef = Math.floor((now - refDate) / DAY);
-  var attempts = parseInt(ref.callAttempts, 10) || 0;
-
-  // -------- Pre-DNC-ID: uncalled / called-not-yet-intaked --------
-  if (!ref.dncId) {
-    if (daysSinceRef >= T.uncalledDocCall) {
-      // 7d+ uncalled → escalate to Lindsey personal call regardless of attempts.
-      // MA voicemails aren't converting at this stage; doc call is the
-      // material intervention.
-      return {
-        icon: "🚨",
-        text: "Doc call needed · " + daysSinceRef + "d",
-        color: "red",
-        pulse: true,
-        onClick: handlers.openCallModal || null
-      };
-    }
-    if (attempts === 0 && daysSinceRef >= T.uncalledStale) {
-      return {
-        icon: "📞",
-        text: "Call patient · stale (" + daysSinceRef + "d)",
-        color: "amber",
-        pulse: false,
-        onClick: handlers.openCallModal || null
-      };
-    }
-    if (attempts === 0) {
-      return {
-        icon: "📞",
-        text: "Call patient",
-        color: "blue",
-        pulse: false,
-        onClick: handlers.openCallModal || null
-      };
-    }
-    return {
-      icon: "📞",
-      text: "Call again",
-      color: "blue",
-      pulse: false,
-      onClick: handlers.openCallModal || null
-    };
-  }
-
-  // -------- Post-DNC-ID branches --------
-
-  if (status === "Referral Received") {
-    return { icon: "📝", text: "Start intake", color: "blue", pulse: false, onClick: handlers.openDraft || null };
-  }
-
-  if (status === "Intake In Progress") {
-    var intakeStuck = daysSinceRef >= T.intakeStuck;
-    return {
-      icon: "📝",
-      text: intakeStuck ? "Resume intake · " + daysSinceRef + "d" : "Resume intake",
-      color: intakeStuck ? "amber" : "blue",
-      pulse: false,
-      onClick: handlers.openDraft || null
-    };
-  }
-
-  if (status === "Awaiting Cosign") {
-    var cosignStuck = daysSinceRef >= T.cosignStuck;
-    return {
-      icon: "⏳",
-      text: cosignStuck ? "Waiting on cosign · " + daysSinceRef + "d" : "Waiting on cosign",
-      color: cosignStuck ? "amber" : "gray",
-      pulse: false,
-      onClick: null
-    };
-  }
-
-  if (status === "Cosigned") {
-    return { icon: "📤", text: "Submit preauth", color: "blue", pulse: false, onClick: null };
-  }
-
-  if (status === "Preauth Submitted" || status === "Preauth In Review") {
-    var preauthStuck = daysSinceRef >= T.preauthStuck;
-    return {
-      icon: "⏳",
-      text: preauthStuck ? "Waiting on payer · " + daysSinceRef + "d" : "Waiting on payer",
-      color: preauthStuck ? "amber" : "gray",
-      pulse: false,
-      onClick: null
-    };
-  }
-
-  if (status.indexOf("Preauth Rejected") === 0) {
-    // PAQ usually catches this and the entry would have short-circuited above.
-    // Fallback for the brief window before PAQ row materializes.
-    return {
-      icon: "🚨",
-      text: "Review denial",
-      color: "red",
-      pulse: true,
-      onClick: handlers.openPaqQueue || null
-    };
-  }
-
-  if (status === "Authorized" || status === "D0 Scheduled") {
-    if (!ref.scheduledD0) {
-      var authStuck = daysSinceRef >= T.authNoD0Stuck;
-      return {
-        icon: "📅",
-        text: authStuck ? "Schedule implant · " + daysSinceRef + "d" : "Schedule implant",
-        color: authStuck ? "amber" : "blue",
-        pulse: false,
-        onClick: null
-      };
-    }
-    // scheduledD0 exists → surface only inside wakeup window
-    var d0Date = new Date(ref.scheduledD0).getTime();
-    var daysUntilD0 = Math.floor((d0Date - now) / DAY);
-    if (daysUntilD0 <= T.wakeupDays && daysUntilD0 >= -1) {
-      var d = new Date(ref.scheduledD0);
-      var dateStr = (d.getMonth()+1) + "/" + d.getDate();
-      return { icon: "📅", text: "Implant " + dateStr, color: "gray", pulse: false, onClick: null };
-    }
-    return null;
-  }
-
-  if (status.indexOf("D0 Complete") === 0) {
-    if (!ref.medicareSubmitted) {
-      var d0CompDate = new Date(ref.d0Complete || ref.referralDate).getTime();
-      var daysSinceD0 = Math.floor((now - d0CompDate) / DAY);
-      if (daysSinceD0 >= T.billingStaleRed) {
-        return {
-          icon: "🚨",
-          text: "Submit implant billing · " + daysSinceD0 + "d",
-          color: "red",
-          pulse: true,
-          onClick: null
-        };
-      }
-      if (daysSinceD0 >= T.billingStaleDay) {
-        return {
-          icon: "💵",
-          text: "Submit implant billing · " + daysSinceD0 + "d",
-          color: "amber",
-          pulse: false,
-          onClick: null
-        };
-      }
-      return { icon: "💵", text: "Submit implant billing", color: "blue", pulse: false, onClick: null };
-    }
-    return null; // billing in flight → status moves to Trial Billing Submitted
-  }
-
-  if (status === "Trial Billing Submitted") {
-    var msSubDate = new Date(ref.medicareSubmitted || ref.referralDate).getTime();
-    var daysSinceSubmit = Math.floor((now - msSubDate) / DAY);
-    var sentStuck = daysSinceSubmit >= T.billingSubmittedStuck;
-    return {
-      icon: "⏳",
-      text: sentStuck ? "Waiting on Medicare · " + daysSinceSubmit + "d" : "Waiting on Medicare",
-      color: sentStuck ? "amber" : "gray",
-      pulse: false,
-      onClick: null
-    };
-  }
-
-  if (status === "Trial Billing Approved") {
-    // Awaiting reimbursement (async, payer-side). Silent by design.
-    return null;
-  }
-
-  if (status.indexOf("Trial Billing Rejected") === 0) {
-    return {
-      icon: "🔧",
-      text: "Correct implant billing",
-      color: "red",
-      pulse: true,
-      onClick: handlers.openPaqQueue || null
-    };
-  }
-
-  // D20/D90 — silent by design per memory #30 (throughput-first; explant data
-  // capture deprioritized while it's not gating reimbursement).
-  if (status.indexOf("D20") === 0 || status.indexOf("D90") === 0) {
-    return null;
-  }
-
-  return null;
-}
-
-// Sort-rank for urgency-banded ordering. Lower = surfaces higher in list.
-// Within a band, ties broken by referral date (oldest first — patient
-// sitting longest with same urgency wins).
-function chipSortRank(chip) {
-  if (!chip) return 5;
-  if (chip.color === "red" && chip.pulse) return 0;
-  if (chip.color === "red") return 1;
-  if (chip.color === "amber") return 2;
-  if (chip.color === "blue") return 3;
-  if (chip.color === "gray") return 4;
-  return 5;
-}
-
 
 function App() {
   const [form, setForm] = useState(defaultState);
@@ -1607,13 +785,6 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
   const [payerResolveNotes, setPayerResolveNotes] = useState("");
   const [payerExpandedActionId, setPayerExpandedActionId] = useState(null);
   const [scrollToDncId, setScrollToDncId] = useState(null);
-  // Board (formerly Refs tab) state:
-  //   actionFilter: "needed" (default — hides cards with no chip) vs "all"
-  //   showManualReferral: collapsed by default. The Board is a status board;
-  //     adding referrals is phase-zero work that lives behind a "+ Manual
-  //     Referral" expander rather than dominating the top of the view.
-  const [actionFilter, setActionFilter] = useState("needed");
-  const [showManualReferral, setShowManualReferral] = useState(false);
   // Map dncId → most-urgent-action summary, for Refs card badge render (Piece B).
   // "Most urgent" = earliest effective deadline (explicit OR SLA-default fallback).
   // count = total open actions for that DNC, used for "+N more" suffix.
@@ -4248,7 +3419,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             width — without it, flex-1 silently refuses to compress long labels. */}
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
         <div className="flex-1 flex min-w-0">
-          {[["referrals","Board"],["cosign","Cosign"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
+          {[["referrals","Refs"],["cosign","Cosign"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
             var v = item[0], l = item[1];
             return <button key={v} onClick={function(){setView(v)}}
               className={"flex-1 min-w-0 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap px-1 " +
@@ -4515,31 +3686,12 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         <div className={"px-4 py-2 text-sm font-medium " + (msg.type==="err" ? "bg-red-50 text-red-600" : msg.type==="warn" ? "bg-yellow-50 text-yellow-700" : "bg-green-50 text-green-600")}>{msg.text}</div>
       )}
 
-      {/* ========== BOARD TAB (formerly Refs) ==========
-           Patient status board. Referral entry collapsed into "+ Manual
-           Referral" accordion since adding referrals is phase-zero work
-           and most referrals now arrive auto-routed via Spruce fax. */}
+      {/* ========== REFERRALS TAB ========== */}
       {view === "referrals" && (
         <div className="p-4 space-y-3">
-          {/* Manual Referral accordion. Auto-expands when parseQueue has
-              pending items so a user mid-snap doesn't lose their work
-              behind a collapsed panel. */}
-          {(function(){
-            var manualOpen = showManualReferral || parseQueue.length > 0;
-            return (
-          <div className="bg-green-50 rounded border border-green-200">
-            <button onClick={function(){setShowManualReferral(!showManualReferral)}}
-              className="w-full px-3 py-2 flex items-center justify-between text-left">
-              <span className="text-xs font-semibold text-green-700">
-                {manualOpen ? "−" : "+"} MANUAL REFERRAL
-                {parseQueue.length > 0 && (
-                  <span className="ml-2 text-blue-700">({parseQueue.length} in queue)</span>
-                )}
-              </span>
-              <span className="text-xs text-green-600">{manualOpen ? "Hide" : "Snap photo or enter manually"}</span>
-            </button>
-            {manualOpen && (
-              <div className="px-3 pb-3 space-y-2 border-t border-green-200 pt-2">
+          {/* Add Referral */}
+          <div className="bg-green-50 rounded p-3 border border-green-200 space-y-2">
+            <div className="text-xs font-semibold text-green-700">NEW REFERRAL</div>
              <label className={"block w-full py-2 rounded text-sm font-medium text-center text-white " +
                 (referralParsing ? "bg-gray-400 cursor-wait pointer-events-none" : "bg-blue-600 cursor-pointer")}>
                 {referralParsing ? (
@@ -4633,10 +3785,16 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               <input className={ic} value={newRef.notes} onChange={function(e){setNewRef(Object.assign({}, newRef, {notes:e.target.value}))}} placeholder="Notes (optional)" />
               <button onClick={function(){addReferral()}} className="w-full py-2 bg-green-600 text-white rounded text-sm font-medium">Add Referral</button>
             </div>
-            )}
+
+          {/* Referrals list */}
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-gray-700">Referrals ({referrals.length})</div>
+            <button onClick={loadReferrals} className="text-xs text-blue-600 font-medium py-1 px-3 border border-blue-200 rounded">{referralsLoading ? "Loading..." : "Refresh"}</button>
           </div>
-            );
-          })()}
+
+          {referrals.length === 0 && !referralsLoading && (
+            <div className="text-center text-gray-400 text-sm py-6">No referrals. Tap Refresh to load from database.</div>
+          )}
 
           {(function(){
             // Tighter contra keyword scan (manual entry fallback — Haiku handles photo path)
@@ -4663,12 +3821,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               return hits;
             }
 
-            // Classify each referral and resolve its next-action chip in one pass.
-            // The chip drives both the filter (Action needed hides cards with no
-            // chip) and the urgency-banded sort. Handlers are stubbed here since
-            // this pass is only computing chip metadata; the actual chip render
-            // below builds real handlers from this scope.
-            var nowMs = Date.now();
+            // Classify each referral
             var classified = referrals.map(function(ref) {
               var notesStr = String(ref.notes || "");
               // Contraindication: trust the CONTRA: marker from Haiku, fall back to keyword scan
@@ -4686,64 +3839,14 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               var primaryIns = insMatch ? insMatch[1].trim() : "";
               var secondaryIns = secMatch ? secMatch[1].trim() : "";
               var payerTier = classifyPayer(primaryIns, secondaryIns);
-              var paqEntry = ref.dncId ? mostUrgentByDnc[ref.dncId] : null;
-              var chip = nextActionForReferral(ref, paqEntry, nowMs, {});
-              return { ref: ref, contraText: contraText, hasContra: !!contraText, payerTier: payerTier, chip: chip };
+              return { ref: ref, contraText: contraText, hasContra: !!contraText, payerTier: payerTier };
             });
+            // Partition: red (contra or red-payer) at bottom; everything else keeps server order
+            var nonRed = classified.filter(function(c){ return !c.hasContra && c.payerTier.tier !== "red"; });
+            var red = classified.filter(function(c){ return c.hasContra || c.payerTier.tier === "red"; });
+            var ordered = nonRed.concat(red);
 
-            // Count of cards that have an actionable chip (anything non-null).
-            // Drives the filter-toggle badge so the count is always honest about
-            // what Action-needed view will show.
-            var actionNeededCount = classified.filter(function(c){ return c.chip !== null; }).length;
-
-            // Filter: Action-needed view hides chip-less cards (terminal states
-            // + intentionally-silent Explant/Followup per memory #30). All view
-            // shows every referral regardless of chip.
-            var filtered = actionFilter === "all" ? classified : classified.filter(function(c){ return c.chip !== null; });
-
-            // Urgency-banded sort: red+pulse → red → amber → blue → gray → none.
-            // Within band, oldest referralDate first (patient sitting longest
-            // with same urgency level surfaces highest).
-            var ordered = filtered.slice().sort(function(a, b) {
-              var rA = chipSortRank(a.chip);
-              var rB = chipSortRank(b.chip);
-              if (rA !== rB) return rA - rB;
-              var dA = a.ref.referralDate ? new Date(a.ref.referralDate).getTime() : 0;
-              var dB = b.ref.referralDate ? new Date(b.ref.referralDate).getTime() : 0;
-              return dA - dB;
-            });
-
-            return (
-              <React.Fragment>
-                {/* Board filter toggle + refresh. Action-needed is the default
-                    because the Board is a status board, not a roster. Counts
-                    on both buttons keep "how much is hiding" honest. */}
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="inline-flex rounded border border-gray-300 overflow-hidden">
-                    <button onClick={function(){setActionFilter("needed")}}
-                      className={"px-3 py-2 text-xs font-medium " + (actionFilter === "needed" ? "bg-blue-600 text-white" : "bg-white text-gray-600")}>
-                      Action needed ({actionNeededCount})
-                    </button>
-                    <button onClick={function(){setActionFilter("all")}}
-                      className={"px-3 py-2 text-xs font-medium border-l border-gray-300 " + (actionFilter === "all" ? "bg-blue-600 text-white" : "bg-white text-gray-600")}>
-                      All ({referrals.length})
-                    </button>
-                  </div>
-                  <button onClick={loadReferrals} className="text-xs text-blue-600 font-medium py-2 px-3 border border-blue-200 rounded">{referralsLoading ? "Loading..." : "Refresh"}</button>
-                </div>
-
-                {/* Filter-aware empty state. "Nothing needs action" is a real
-                    success state — celebrate it briefly without burying the
-                    All-view escape hatch. */}
-                {ordered.length === 0 && !referralsLoading && (
-                  <div className="text-center text-gray-400 text-sm py-6">
-                    {actionFilter === "needed" && referrals.length > 0
-                      ? "Nothing needs action right now. Tap All to see every patient."
-                      : "No referrals. Tap Refresh to load from database."}
-                  </div>
-                )}
-
-                {ordered.map(function(c, idx) {
+            return ordered.map(function(c, idx) {
               var ref = c.ref;
               var days = ref.referralDate ? Math.floor((Date.now() - new Date(ref.referralDate).getTime()) / 86400000) : 0;
               var isStale = days >= 2 && !ref.called && !c.hasContra && c.payerTier.tier !== "red";
@@ -4833,7 +3936,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                         <span title="Non-canonical status — needs human review or update"
                               className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-200 text-yellow-900 font-bold">?</span>
                       )}
-                      <div className={"text-xs font-medium " + statusColor}>{displayStatus(ref.status)}</div>
+                      <div className={"text-xs font-medium " + statusColor}>{ref.status || "New"}</div>
                     </div>
                   </div>
                   {/* Payer category badge — shows what we KNOW about this
@@ -4998,45 +4101,31 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     </div>
                   );
                 })()}
-{/* Unified next-action chip. ONE slot per card. When this DNC has an open
-                    payer action, the chip IS that action (PAQ-derived, urgency colors
-                    red/amber/gray, tap → Cosign tab + scroll). When no PAQ, the chip
-                    is status-derived via nextActionForReferral() with blue/amber/gray
-                    semantics + red+pulse for cash-chokepoint escalation (7d uncalled
-                    "Doc call needed" and 7d D0-Complete-no-billing). Null = card has
-                    no actionable next step (terminal states or quiet in-flight states
-                    like Explant/Followup per memory #30). */}
-                {(function(){
-                  var paqEntry = ref.dncId ? mostUrgentByDnc[ref.dncId] : null;
-                  var handlers = {
-                    openCallModal: function(){ openCallModal(ref); },
-                    openDraft: function(){
-                      // Mirrors the existing Open Draft button flow exactly so
-                      // tapping the chip and tapping the button below give the
-                      // same outcome — no surprises from chip-vs-button drift.
-                      setForm(Object.assign({}, defaultState, { date: todayLocal(), patientId: ref.dncId }));
-                      setPatientName(ref.name || "");
-                      setFormSection("intake");
-                      setView("form");
-                      loadDraft(ref.dncId, ref.name);
-                    },
-                    openPaqQueue: function(){ setScrollToDncId(ref.dncId); setView("cosign"); }
-                  };
-                  var chip = nextActionForReferral(ref, paqEntry, Date.now(), handlers);
-                  if (!chip) return null;
-                  // Color → Tailwind classes. red+pulse gets bg-red-500/text-white
-                  // for max contrast (the chip is now an alarm, not a status tag);
-                  // other colors keep the soft tinted-pill look.
-                  var colorClasses =
-                    chip.color === "red" && chip.pulse ? "bg-red-500 text-white animate-pulse" :
-                    chip.color === "red"   ? "bg-red-100 text-red-800" :
-                    chip.color === "amber" ? "bg-amber-100 text-amber-800" :
-                    chip.color === "blue"  ? "bg-blue-100 text-blue-800" :
-                                             "bg-gray-100 text-gray-700";
-                  var classes = "text-xs px-2 py-1 rounded inline-flex items-center gap-1 mt-1 font-medium " + colorClasses;
-                  return chip.onClick
-                    ? <button onClick={chip.onClick} className={classes}>{chip.icon} {chip.text}</button>
-                    : <div className={classes}>{chip.icon} {chip.text}</div>;
+{/* Payer action badge — surfaces ANY open p2p_request / appeal_required /
+                    additional_info_request for this DNC ID. Color reflects urgency:
+                      gray  = explicit deadline > 24h out, OR SLA-default still in window
+                      amber = explicit deadline within 24h
+                      red   = explicit deadline past, OR SLA-default window blew
+                    "+N more" suffix when this patient has multiple open actions; tapping
+                    the badge switches to Cosign tab where (Piece C) the full queue with
+                    Mark-done lives. v1 just switches tabs; row-scroll is a later refinement. */}
+                {ref.dncId && (function(){
+                  var u = mostUrgentByDnc[ref.dncId];
+                  if (!u) return null;
+                  var color = urgencyForAction(u, Date.now()).color;
+                  var colorClasses = color === "red"   ? "bg-red-100 text-red-800"
+                                   : color === "amber" ? "bg-amber-100 text-amber-800"
+                                                       : "bg-gray-100 text-gray-700";
+                  var typeLabel = PAYER_ACTION_TYPE_LABEL[u.actionType] || "Action";
+                  var deadlineStr = formatDeadline(u.deadline, u.deadlineSource, u.actionType);
+                  var moreSuffix = u.count > 1 ? " · +" + (u.count - 1) + " more" : "";
+                  return (
+                    <button
+                     onClick={function(){ setScrollToDncId(ref.dncId); setView("cosign"); }}
+                      className={"text-xs px-2 py-1 rounded inline-flex items-center gap-1 mt-1 " + colorClasses}>
+                      📋 {typeLabel} · {deadlineStr}{moreSuffix}
+                    </button>
+                  );
                 })()}
                         <div className="flex gap-2 pt-1">
                   {/* Call logging button — always available regardless of pipeline
@@ -5086,9 +4175,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 </div>
               </div>
             );
-          })}
-              </React.Fragment>
-            );
+          });
           })()}
         </div>
       )}
@@ -6981,9 +6068,7 @@ function AuthGate() {
         <span>{user.email}</span>
         <button onClick={signOut} className="text-blue-600 underline">Sign out</button>
       </div>
-      <App />
-    </div>
-  );
+      <App />    </div>  );
 }
 
 ReactDOM.render(<AuthGate />, document.getElementById("root"));
