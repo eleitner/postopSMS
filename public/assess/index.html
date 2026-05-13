@@ -675,6 +675,280 @@ function formatDeadline(deadline, deadlineSource, actionType) {
   return "SLA";
 }
 
+// Display-only status mapper. Backend keeps "Trial Billing X" / "D0 X" /
+// "D20 X" / "D90 X" as canonical strings (status taxonomy, predecessor map,
+// sheet column names all use them). The UI shows clinical names instead:
+// Implant Billing / Implant / Explant / Followup. Use this anywhere ref.status
+// is rendered to MAs or clinicians. NEVER use for business-logic comparisons —
+// those keep comparing against canonical backend strings.
+function displayStatus(s) {
+  return String(s || "New")
+    .replace(/Trial Billing/g, "Implant Billing")
+    .replace(/\bD0\b/g, "Implant")
+    .replace(/\bD20\b/g, "Explant")
+    .replace(/\bD90\b/g, "Followup");
+}
+
+// Board chip stuck/age thresholds (days). Hardcoded defaults — empirical p90
+// per (status, payer) from Status Norms sheet swaps in later (see memory #23).
+// Adjusting these is the right knob; chip color/copy logic stays the same.
+var BOARD_THRESHOLDS = {
+  uncalledStale: 2,          // amber: still no contact 2d after referral arrived
+  uncalledDocCall: 7,        // red+pulse: 7d uncalled triggers Lindsey personal call
+  intakeStuck: 7,            // amber: intake started but stalled
+  cosignStuck: 2,            // amber: cosign waiting too long
+  preauthStuck: 14,          // amber: payer sitting on submitted preauth
+  authNoD0Stuck: 7,          // amber: authorized but no implant scheduled
+  billingStaleDay: 3,        // amber: D0 done, billing not submitted
+  billingStaleRed: 7,        // red+pulse: cash chokepoint (see memory #30)
+  billingSubmittedStuck: 30, // amber: Medicare sitting on claim
+  wakeupDays: 2              // gray scheduled events surface in Action-needed when within this window
+};
+
+// Unified next-action chip resolver. Single function returns the chip data
+// for a referral card based on its current state, timestamps, call history,
+// and any open Payer Action Queue entry. Returns null when no chip should
+// appear (terminal states, quiet in-flight states like Explant/Followup
+// per memory #30, far-future scheduled events outside wakeup window).
+//
+// Returns: { icon, text, color, pulse, onClick } or null
+//   color: "red" | "amber" | "blue" | "gray"
+//          blue = MA action available
+//          amber = stuck (exceeds expected duration)
+//          gray = waiting (intentional pause; surfaces only inside wakeup window)
+//          red = escalated/overdue, paired with pulse for visual alarm
+//   pulse: true → animate-pulse on chip bg; reserved for 7d+ doc-call and
+//          7d+ billing-not-submitted (cash chokepoint)
+//   onClick: handler from caller closure, or null when purely informational
+//
+// The PAQ entry takes priority — when this DNC has an open payer action it IS
+// the next action, status-derived chip is suppressed. ONE chip slot per card.
+function nextActionForReferral(ref, paqEntry, now, handlers) {
+  now = now || Date.now();
+  handlers = handlers || {};
+  var DAY = 86400000;
+  var status = String(ref.status || "").trim();
+  var T = BOARD_THRESHOLDS;
+
+  // -------- PAQ override --------
+  if (paqEntry) {
+    var paqColor = urgencyForAction(paqEntry, now).color;
+    var typeLabel = PAYER_ACTION_TYPE_LABEL[paqEntry.actionType] || "Action";
+    var deadlineStr = formatDeadline(paqEntry.deadline, paqEntry.deadlineSource, paqEntry.actionType);
+    var moreSuffix = paqEntry.count > 1 ? " · +" + (paqEntry.count - 1) + " more" : "";
+    return {
+      icon: "📋",
+      text: typeLabel + " · " + deadlineStr + moreSuffix,
+      color: paqColor,
+      pulse: paqColor === "red",
+      onClick: handlers.openPaqQueue || null
+    };
+  }
+
+  // -------- Terminal states: hidden entirely --------
+  if (status === "Complete" || status === "Reimbursed" || status.indexOf("Removed") === 0) {
+    return null;
+  }
+
+  var refDate = ref.referralDate ? new Date(ref.referralDate).getTime() : now;
+  var daysSinceRef = Math.floor((now - refDate) / DAY);
+  var attempts = parseInt(ref.callAttempts, 10) || 0;
+
+  // -------- Pre-DNC-ID: uncalled / called-not-yet-intaked --------
+  if (!ref.dncId) {
+    if (daysSinceRef >= T.uncalledDocCall) {
+      // 7d+ uncalled → escalate to Lindsey personal call regardless of attempts.
+      // MA voicemails aren't converting at this stage; doc call is the
+      // material intervention.
+      return {
+        icon: "🚨",
+        text: "Doc call needed · " + daysSinceRef + "d",
+        color: "red",
+        pulse: true,
+        onClick: handlers.openCallModal || null
+      };
+    }
+    if (attempts === 0 && daysSinceRef >= T.uncalledStale) {
+      return {
+        icon: "📞",
+        text: "Call patient · stale (" + daysSinceRef + "d)",
+        color: "amber",
+        pulse: false,
+        onClick: handlers.openCallModal || null
+      };
+    }
+    if (attempts === 0) {
+      return {
+        icon: "📞",
+        text: "Call patient",
+        color: "blue",
+        pulse: false,
+        onClick: handlers.openCallModal || null
+      };
+    }
+    return {
+      icon: "📞",
+      text: "Call again",
+      color: "blue",
+      pulse: false,
+      onClick: handlers.openCallModal || null
+    };
+  }
+
+  // -------- Post-DNC-ID branches --------
+
+  if (status === "Referral Received") {
+    return { icon: "📝", text: "Start intake", color: "blue", pulse: false, onClick: handlers.openDraft || null };
+  }
+
+  if (status === "Intake In Progress") {
+    var intakeStuck = daysSinceRef >= T.intakeStuck;
+    return {
+      icon: "📝",
+      text: intakeStuck ? "Resume intake · " + daysSinceRef + "d" : "Resume intake",
+      color: intakeStuck ? "amber" : "blue",
+      pulse: false,
+      onClick: handlers.openDraft || null
+    };
+  }
+
+  if (status === "Awaiting Cosign") {
+    var cosignStuck = daysSinceRef >= T.cosignStuck;
+    return {
+      icon: "⏳",
+      text: cosignStuck ? "Waiting on cosign · " + daysSinceRef + "d" : "Waiting on cosign",
+      color: cosignStuck ? "amber" : "gray",
+      pulse: false,
+      onClick: null
+    };
+  }
+
+  if (status === "Cosigned") {
+    return { icon: "📤", text: "Submit preauth", color: "blue", pulse: false, onClick: null };
+  }
+
+  if (status === "Preauth Submitted" || status === "Preauth In Review") {
+    var preauthStuck = daysSinceRef >= T.preauthStuck;
+    return {
+      icon: "⏳",
+      text: preauthStuck ? "Waiting on payer · " + daysSinceRef + "d" : "Waiting on payer",
+      color: preauthStuck ? "amber" : "gray",
+      pulse: false,
+      onClick: null
+    };
+  }
+
+  if (status.indexOf("Preauth Rejected") === 0) {
+    // PAQ usually catches this and the entry would have short-circuited above.
+    // Fallback for the brief window before PAQ row materializes.
+    return {
+      icon: "🚨",
+      text: "Review denial",
+      color: "red",
+      pulse: true,
+      onClick: handlers.openPaqQueue || null
+    };
+  }
+
+  if (status === "Authorized" || status === "D0 Scheduled") {
+    if (!ref.scheduledD0) {
+      var authStuck = daysSinceRef >= T.authNoD0Stuck;
+      return {
+        icon: "📅",
+        text: authStuck ? "Schedule implant · " + daysSinceRef + "d" : "Schedule implant",
+        color: authStuck ? "amber" : "blue",
+        pulse: false,
+        onClick: null
+      };
+    }
+    // scheduledD0 exists → surface only inside wakeup window
+    var d0Date = new Date(ref.scheduledD0).getTime();
+    var daysUntilD0 = Math.floor((d0Date - now) / DAY);
+    if (daysUntilD0 <= T.wakeupDays && daysUntilD0 >= -1) {
+      var d = new Date(ref.scheduledD0);
+      var dateStr = (d.getMonth()+1) + "/" + d.getDate();
+      return { icon: "📅", text: "Implant " + dateStr, color: "gray", pulse: false, onClick: null };
+    }
+    return null;
+  }
+
+  if (status.indexOf("D0 Complete") === 0) {
+    if (!ref.medicareSubmitted) {
+      var d0CompDate = new Date(ref.d0Complete || ref.referralDate).getTime();
+      var daysSinceD0 = Math.floor((now - d0CompDate) / DAY);
+      if (daysSinceD0 >= T.billingStaleRed) {
+        return {
+          icon: "🚨",
+          text: "Submit implant billing · " + daysSinceD0 + "d",
+          color: "red",
+          pulse: true,
+          onClick: null
+        };
+      }
+      if (daysSinceD0 >= T.billingStaleDay) {
+        return {
+          icon: "💵",
+          text: "Submit implant billing · " + daysSinceD0 + "d",
+          color: "amber",
+          pulse: false,
+          onClick: null
+        };
+      }
+      return { icon: "💵", text: "Submit implant billing", color: "blue", pulse: false, onClick: null };
+    }
+    return null; // billing in flight → status moves to Trial Billing Submitted
+  }
+
+  if (status === "Trial Billing Submitted") {
+    var msSubDate = new Date(ref.medicareSubmitted || ref.referralDate).getTime();
+    var daysSinceSubmit = Math.floor((now - msSubDate) / DAY);
+    var sentStuck = daysSinceSubmit >= T.billingSubmittedStuck;
+    return {
+      icon: "⏳",
+      text: sentStuck ? "Waiting on Medicare · " + daysSinceSubmit + "d" : "Waiting on Medicare",
+      color: sentStuck ? "amber" : "gray",
+      pulse: false,
+      onClick: null
+    };
+  }
+
+  if (status === "Trial Billing Approved") {
+    // Awaiting reimbursement (async, payer-side). Silent by design.
+    return null;
+  }
+
+  if (status.indexOf("Trial Billing Rejected") === 0) {
+    return {
+      icon: "🔧",
+      text: "Correct implant billing",
+      color: "red",
+      pulse: true,
+      onClick: handlers.openPaqQueue || null
+    };
+  }
+
+  // D20/D90 — silent by design per memory #30 (throughput-first; explant data
+  // capture deprioritized while it's not gating reimbursement).
+  if (status.indexOf("D20") === 0 || status.indexOf("D90") === 0) {
+    return null;
+  }
+
+  return null;
+}
+
+// Sort-rank for urgency-banded ordering. Lower = surfaces higher in list.
+// Within a band, ties broken by referral date (oldest first — patient
+// sitting longest with same urgency wins).
+function chipSortRank(chip) {
+  if (!chip) return 5;
+  if (chip.color === "red" && chip.pulse) return 0;
+  if (chip.color === "red") return 1;
+  if (chip.color === "amber") return 2;
+  if (chip.color === "blue") return 3;
+  if (chip.color === "gray") return 4;
+  return 5;
+}
+
 
 function App() {
   const [form, setForm] = useState(defaultState);
@@ -785,6 +1059,13 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
   const [payerResolveNotes, setPayerResolveNotes] = useState("");
   const [payerExpandedActionId, setPayerExpandedActionId] = useState(null);
   const [scrollToDncId, setScrollToDncId] = useState(null);
+  // Board (formerly Refs tab) state:
+  //   actionFilter: "needed" (default — hides cards with no chip) vs "all"
+  //   showManualReferral: collapsed by default. The Board is a status board;
+  //     adding referrals is phase-zero work that lives behind a "+ Manual
+  //     Referral" expander rather than dominating the top of the view.
+  const [actionFilter, setActionFilter] = useState("needed");
+  const [showManualReferral, setShowManualReferral] = useState(false);
   // Map dncId → most-urgent-action summary, for Refs card badge render (Piece B).
   // "Most urgent" = earliest effective deadline (explicit OR SLA-default fallback).
   // count = total open actions for that DNC, used for "+N more" suffix.
@@ -3419,7 +3700,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             width — without it, flex-1 silently refuses to compress long labels. */}
       <div className="flex border-b border-gray-200 sticky top-0 bg-white z-10">
         <div className="flex-1 flex min-w-0">
-          {[["referrals","Refs"],["cosign","Cosign"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
+          {[["referrals","Board"],["cosign","Cosign"],["consent","Consent"],["form","Assess"],["photos","Photos"],["note","Note"],["records","Data"]].map(function(item) {
             var v = item[0], l = item[1];
             return <button key={v} onClick={function(){setView(v)}}
               className={"flex-1 min-w-0 py-2.5 text-xs sm:text-sm font-medium whitespace-nowrap px-1 " +
@@ -3686,12 +3967,31 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         <div className={"px-4 py-2 text-sm font-medium " + (msg.type==="err" ? "bg-red-50 text-red-600" : msg.type==="warn" ? "bg-yellow-50 text-yellow-700" : "bg-green-50 text-green-600")}>{msg.text}</div>
       )}
 
-      {/* ========== REFERRALS TAB ========== */}
+      {/* ========== BOARD TAB (formerly Refs) ==========
+           Patient status board. Referral entry collapsed into "+ Manual
+           Referral" accordion since adding referrals is phase-zero work
+           and most referrals now arrive auto-routed via Spruce fax. */}
       {view === "referrals" && (
         <div className="p-4 space-y-3">
-          {/* Add Referral */}
-          <div className="bg-green-50 rounded p-3 border border-green-200 space-y-2">
-            <div className="text-xs font-semibold text-green-700">NEW REFERRAL</div>
+          {/* Manual Referral accordion. Auto-expands when parseQueue has
+              pending items so a user mid-snap doesn't lose their work
+              behind a collapsed panel. */}
+          {(function(){
+            var manualOpen = showManualReferral || parseQueue.length > 0;
+            return (
+          <div className="bg-green-50 rounded border border-green-200">
+            <button onClick={function(){setShowManualReferral(!showManualReferral)}}
+              className="w-full px-3 py-2 flex items-center justify-between text-left">
+              <span className="text-xs font-semibold text-green-700">
+                {manualOpen ? "−" : "+"} MANUAL REFERRAL
+                {parseQueue.length > 0 && (
+                  <span className="ml-2 text-blue-700">({parseQueue.length} in queue)</span>
+                )}
+              </span>
+              <span className="text-xs text-green-600">{manualOpen ? "Hide" : "Snap photo or enter manually"}</span>
+            </button>
+            {manualOpen && (
+              <div className="px-3 pb-3 space-y-2 border-t border-green-200 pt-2">
              <label className={"block w-full py-2 rounded text-sm font-medium text-center text-white " +
                 (referralParsing ? "bg-gray-400 cursor-wait pointer-events-none" : "bg-blue-600 cursor-pointer")}>
                 {referralParsing ? (
@@ -3785,16 +4085,10 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               <input className={ic} value={newRef.notes} onChange={function(e){setNewRef(Object.assign({}, newRef, {notes:e.target.value}))}} placeholder="Notes (optional)" />
               <button onClick={function(){addReferral()}} className="w-full py-2 bg-green-600 text-white rounded text-sm font-medium">Add Referral</button>
             </div>
-
-          {/* Referrals list */}
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-gray-700">Referrals ({referrals.length})</div>
-            <button onClick={loadReferrals} className="text-xs text-blue-600 font-medium py-1 px-3 border border-blue-200 rounded">{referralsLoading ? "Loading..." : "Refresh"}</button>
+            )}
           </div>
-
-          {referrals.length === 0 && !referralsLoading && (
-            <div className="text-center text-gray-400 text-sm py-6">No referrals. Tap Refresh to load from database.</div>
-          )}
+            );
+          })()}
 
           {(function(){
             // Tighter contra keyword scan (manual entry fallback — Haiku handles photo path)
@@ -3821,7 +4115,12 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               return hits;
             }
 
-            // Classify each referral
+            // Classify each referral and resolve its next-action chip in one pass.
+            // The chip drives both the filter (Action needed hides cards with no
+            // chip) and the urgency-banded sort. Handlers are stubbed here since
+            // this pass is only computing chip metadata; the actual chip render
+            // below builds real handlers from this scope.
+            var nowMs = Date.now();
             var classified = referrals.map(function(ref) {
               var notesStr = String(ref.notes || "");
               // Contraindication: trust the CONTRA: marker from Haiku, fall back to keyword scan
@@ -3839,14 +4138,64 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               var primaryIns = insMatch ? insMatch[1].trim() : "";
               var secondaryIns = secMatch ? secMatch[1].trim() : "";
               var payerTier = classifyPayer(primaryIns, secondaryIns);
-              return { ref: ref, contraText: contraText, hasContra: !!contraText, payerTier: payerTier };
+              var paqEntry = ref.dncId ? mostUrgentByDnc[ref.dncId] : null;
+              var chip = nextActionForReferral(ref, paqEntry, nowMs, {});
+              return { ref: ref, contraText: contraText, hasContra: !!contraText, payerTier: payerTier, chip: chip };
             });
-            // Partition: red (contra or red-payer) at bottom; everything else keeps server order
-            var nonRed = classified.filter(function(c){ return !c.hasContra && c.payerTier.tier !== "red"; });
-            var red = classified.filter(function(c){ return c.hasContra || c.payerTier.tier === "red"; });
-            var ordered = nonRed.concat(red);
 
-            return ordered.map(function(c, idx) {
+            // Count of cards that have an actionable chip (anything non-null).
+            // Drives the filter-toggle badge so the count is always honest about
+            // what Action-needed view will show.
+            var actionNeededCount = classified.filter(function(c){ return c.chip !== null; }).length;
+
+            // Filter: Action-needed view hides chip-less cards (terminal states
+            // + intentionally-silent Explant/Followup per memory #30). All view
+            // shows every referral regardless of chip.
+            var filtered = actionFilter === "all" ? classified : classified.filter(function(c){ return c.chip !== null; });
+
+            // Urgency-banded sort: red+pulse → red → amber → blue → gray → none.
+            // Within band, oldest referralDate first (patient sitting longest
+            // with same urgency level surfaces highest).
+            var ordered = filtered.slice().sort(function(a, b) {
+              var rA = chipSortRank(a.chip);
+              var rB = chipSortRank(b.chip);
+              if (rA !== rB) return rA - rB;
+              var dA = a.ref.referralDate ? new Date(a.ref.referralDate).getTime() : 0;
+              var dB = b.ref.referralDate ? new Date(b.ref.referralDate).getTime() : 0;
+              return dA - dB;
+            });
+
+            return (
+              <React.Fragment>
+                {/* Board filter toggle + refresh. Action-needed is the default
+                    because the Board is a status board, not a roster. Counts
+                    on both buttons keep "how much is hiding" honest. */}
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="inline-flex rounded border border-gray-300 overflow-hidden">
+                    <button onClick={function(){setActionFilter("needed")}}
+                      className={"px-3 py-2 text-xs font-medium " + (actionFilter === "needed" ? "bg-blue-600 text-white" : "bg-white text-gray-600")}>
+                      Action needed ({actionNeededCount})
+                    </button>
+                    <button onClick={function(){setActionFilter("all")}}
+                      className={"px-3 py-2 text-xs font-medium border-l border-gray-300 " + (actionFilter === "all" ? "bg-blue-600 text-white" : "bg-white text-gray-600")}>
+                      All ({referrals.length})
+                    </button>
+                  </div>
+                  <button onClick={loadReferrals} className="text-xs text-blue-600 font-medium py-2 px-3 border border-blue-200 rounded">{referralsLoading ? "Loading..." : "Refresh"}</button>
+                </div>
+
+                {/* Filter-aware empty state. "Nothing needs action" is a real
+                    success state — celebrate it briefly without burying the
+                    All-view escape hatch. */}
+                {ordered.length === 0 && !referralsLoading && (
+                  <div className="text-center text-gray-400 text-sm py-6">
+                    {actionFilter === "needed" && referrals.length > 0
+                      ? "Nothing needs action right now. Tap All to see every patient."
+                      : "No referrals. Tap Refresh to load from database."}
+                  </div>
+                )}
+
+                {ordered.map(function(c, idx) {
               var ref = c.ref;
               var days = ref.referralDate ? Math.floor((Date.now() - new Date(ref.referralDate).getTime()) / 86400000) : 0;
               var isStale = days >= 2 && !ref.called && !c.hasContra && c.payerTier.tier !== "red";
@@ -3936,7 +4285,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                         <span title="Non-canonical status — needs human review or update"
                               className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-200 text-yellow-900 font-bold">?</span>
                       )}
-                      <div className={"text-xs font-medium " + statusColor}>{ref.status || "New"}</div>
+                      <div className={"text-xs font-medium " + statusColor}>{displayStatus(ref.status)}</div>
                     </div>
                   </div>
                   {/* Payer category badge — shows what we KNOW about this
@@ -4101,31 +4450,45 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                     </div>
                   );
                 })()}
-{/* Payer action badge — surfaces ANY open p2p_request / appeal_required /
-                    additional_info_request for this DNC ID. Color reflects urgency:
-                      gray  = explicit deadline > 24h out, OR SLA-default still in window
-                      amber = explicit deadline within 24h
-                      red   = explicit deadline past, OR SLA-default window blew
-                    "+N more" suffix when this patient has multiple open actions; tapping
-                    the badge switches to Cosign tab where (Piece C) the full queue with
-                    Mark-done lives. v1 just switches tabs; row-scroll is a later refinement. */}
-                {ref.dncId && (function(){
-                  var u = mostUrgentByDnc[ref.dncId];
-                  if (!u) return null;
-                  var color = urgencyForAction(u, Date.now()).color;
-                  var colorClasses = color === "red"   ? "bg-red-100 text-red-800"
-                                   : color === "amber" ? "bg-amber-100 text-amber-800"
-                                                       : "bg-gray-100 text-gray-700";
-                  var typeLabel = PAYER_ACTION_TYPE_LABEL[u.actionType] || "Action";
-                  var deadlineStr = formatDeadline(u.deadline, u.deadlineSource, u.actionType);
-                  var moreSuffix = u.count > 1 ? " · +" + (u.count - 1) + " more" : "";
-                  return (
-                    <button
-                     onClick={function(){ setScrollToDncId(ref.dncId); setView("cosign"); }}
-                      className={"text-xs px-2 py-1 rounded inline-flex items-center gap-1 mt-1 " + colorClasses}>
-                      📋 {typeLabel} · {deadlineStr}{moreSuffix}
-                    </button>
-                  );
+{/* Unified next-action chip. ONE slot per card. When this DNC has an open
+                    payer action, the chip IS that action (PAQ-derived, urgency colors
+                    red/amber/gray, tap → Cosign tab + scroll). When no PAQ, the chip
+                    is status-derived via nextActionForReferral() with blue/amber/gray
+                    semantics + red+pulse for cash-chokepoint escalation (7d uncalled
+                    "Doc call needed" and 7d D0-Complete-no-billing). Null = card has
+                    no actionable next step (terminal states or quiet in-flight states
+                    like Explant/Followup per memory #30). */}
+                {(function(){
+                  var paqEntry = ref.dncId ? mostUrgentByDnc[ref.dncId] : null;
+                  var handlers = {
+                    openCallModal: function(){ openCallModal(ref); },
+                    openDraft: function(){
+                      // Mirrors the existing Open Draft button flow exactly so
+                      // tapping the chip and tapping the button below give the
+                      // same outcome — no surprises from chip-vs-button drift.
+                      setForm(Object.assign({}, defaultState, { date: todayLocal(), patientId: ref.dncId }));
+                      setPatientName(ref.name || "");
+                      setFormSection("intake");
+                      setView("form");
+                      loadDraft(ref.dncId, ref.name);
+                    },
+                    openPaqQueue: function(){ setScrollToDncId(ref.dncId); setView("cosign"); }
+                  };
+                  var chip = nextActionForReferral(ref, paqEntry, Date.now(), handlers);
+                  if (!chip) return null;
+                  // Color → Tailwind classes. red+pulse gets bg-red-500/text-white
+                  // for max contrast (the chip is now an alarm, not a status tag);
+                  // other colors keep the soft tinted-pill look.
+                  var colorClasses =
+                    chip.color === "red" && chip.pulse ? "bg-red-500 text-white animate-pulse" :
+                    chip.color === "red"   ? "bg-red-100 text-red-800" :
+                    chip.color === "amber" ? "bg-amber-100 text-amber-800" :
+                    chip.color === "blue"  ? "bg-blue-100 text-blue-800" :
+                                             "bg-gray-100 text-gray-700";
+                  var classes = "text-xs px-2 py-1 rounded inline-flex items-center gap-1 mt-1 font-medium " + colorClasses;
+                  return chip.onClick
+                    ? <button onClick={chip.onClick} className={classes}>{chip.icon} {chip.text}</button>
+                    : <div className={classes}>{chip.icon} {chip.text}</div>;
                 })()}
                         <div className="flex gap-2 pt-1">
                   {/* Call logging button — always available regardless of pipeline
@@ -4175,7 +4538,9 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 </div>
               </div>
             );
-          });
+          })}
+              </React.Fragment>
+            );
           })()}
         </div>
       )}
@@ -6068,7 +6433,9 @@ function AuthGate() {
         <span>{user.email}</span>
         <button onClick={signOut} className="text-blue-600 underline">Sign out</button>
       </div>
-      <App />    </div>  );
+      <App />
+    </div>
+  );
 }
 
 ReactDOM.render(<AuthGate />, document.getElementById("root"));
