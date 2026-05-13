@@ -4261,11 +4261,18 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                         // approval email comes in, so the badge updates without
                         // anyone having to manually change anything.
                         var s = String(ref.status || "").trim();
-                        var preauthDone = s === "Authorized" ||
-                          s === "D0 Scheduled" || s === "D0 Complete" ||
-                          s.indexOf("Trial Billing") === 0 ||
-                          s === "D20 Complete" || s === "D90 Complete" ||
-                          s === "Reimbursed" || s === "Complete";
+// Use prefix match for "X Complete" statuses — backend taxonomy stores
+// next-step blockers in trailing suffix ("D0 Complete - Awaiting Medicare",
+// "D20 Complete - Schedule D90"). Exact-match here previously caused cards
+// to show "Preauth pending" for patients already past D0/D20. Aligns with
+// STATUS_TAXONOMY.canonicalPrefixes on the backend.
+var preauthDone = s === "Authorized" ||
+  s === "D0 Scheduled" ||
+  s.indexOf("D0 Complete") === 0 ||
+  s.indexOf("Trial Billing") === 0 ||
+  s.indexOf("D20 Complete") === 0 ||
+  s.indexOf("D90 Complete") === 0 ||
+  s === "Reimbursed" || s === "Complete";
                         if (preauthDone) {
                           return <span className="text-xs bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">MA · authorized</span>;
                         }
