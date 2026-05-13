@@ -1,0 +1,349 @@
+// ============================================================
+// DNC Status Renderer
+// ============================================================
+// Bound Apps Script project on the Master Data spreadsheet.
+// Watches column 16 (Status) of the Clinic Throughput sheet.
+// When status changes, renders a Drive shortcut to the patient's
+// root folder into the appropriate status folder.
+//
+// Originals never move. Shortcuts are projections of state, not state itself.
+//
+// Status → Folder collapse:
+//   Authorized                     → Authorized
+//   Trial Billing Submitted        → Billed
+//   Trial Billing Approved         → Billed
+//   Trial Billing Rejected (any)   → Needs Correction
+//   Reimbursed                     → Reimbursed
+//   Preauth Rejected (any)         → Preauth Rejected
+//
+// All other statuses (Referral Received, Intake In Progress, Awaiting
+// Cosign, Cosigned, Preauth In Review, Preauth Submitted, D0/D20/D90
+// scheduled or complete, Removed:*, Complete) → no folder.
+// Shortcut is removed from all status folders if status is not one of
+// the five rendered states. This keeps "in-flight" patients out of the
+// billing-status views.
+//
+// SETUP:
+//   1. From the Master Data spreadsheet: Extensions → Apps Script
+//   2. Paste this file as Code.gs in the new project
+//   3. Fill in the FOLDER ID constants below
+//   4. Save → Run testRenderer() once to verify Drive auth + folder access
+//   5. Run backfillAllShortcuts() to populate folders from current state
+//   6. Add installable trigger: Triggers → Add → onStatusEdit, on edit
+//
+// To change the status → folder mapping, edit STATUS_TO_FOLDER below.
+// ============================================================
+
+// ----- CONFIGURATION -----
+// Patient root folder containing all "{Name} - DNC-XXXX" subfolders.
+// Same value as NOTES_FOLDER_ID in the main DNC backend.
+var PATIENT_ROOT_FOLDER_ID = "12Xys2cb9C57etSWwCjxiORZk3dTI19mN";
+
+// Five status-rendering folders. Create these once in Drive (nested inside
+// PATIENT_ROOT_FOLDER_ID is recommended) and paste their IDs here.
+var STATUS_FOLDER_IDS = {
+  "Preauth in Review":         "1wrB4JjEVCJ1DHFEYAXHjYIxyc9acQlJb",
+  "Authorized":                   "1M0pxsWulDEv3cyq8S9ve2drt8EHIemR2",
+  "Preauth Rejected":             "1tH55YQonfpK0DXwaJ_aaZOLbzgU85kIv",
+  "Billed":                       "1krkUfclVmFJpoLMWiyT6xACDz4NOeEX0",
+  "Needs Correction for Billing": "1KKLnIFb4Cd7iB4ncHnXn6wIJ7RdOCbCQ",
+  "Reimbursed":                   "1zq7OAlVaP8LkUWlKbOYIfzdcdYpIC1aM"
+};
+
+// Throughput sheet name and column indices (1-based).
+var THROUGHPUT_SHEET_NAME = "Clinic Throughput";
+var COL_PATIENT_NAME = 1;
+var COL_DNC_ID = 4;
+var COL_STATUS = 16;
+
+// ----- STATUS → FOLDER MAPPING -----
+// Order matters for prefix matches: longer/more-specific keys first.
+// Returned folder name must match a key in STATUS_FOLDER_IDS, or null
+// to indicate "shortcut should not exist in any status folder."
+function statusToFolderName(status) {
+  if (!status) return null;
+  var s = String(status).trim();
+
+  // Prefix matches first (rejections carry reason suffixes)
+  if (s.indexOf("Preauth Rejected") === 0) return "Preauth Rejected";
+  if (s.indexOf("Trial Billing Rejected") === 0) return "Needs Correction for Billing";
+
+  // Exact matches
+  if (s === "Preauth Submitted") return "Preauth in Review";
+  if (s === "Preauth In Review") return "Preauth in Review";
+  if (s === "Authorized") return "Authorized";
+  if (s === "D0 Scheduled") return "Authorized";
+ if (s.indexOf("D0 Complete") === 0) return "Authorized";
+  if (s === "Trial Billing Submitted") return "Billed";
+  if (s === "Trial Billing Approved") return "Billed";
+  if (s === "Reimbursed") return "Reimbursed";
+
+  return null;
+}
+
+// ============================================================
+// TRIGGER ENTRY POINT
+// ============================================================
+// Installable onEdit. Fires on every cell edit in the spreadsheet.
+// Filters to the Status column of Throughput, ignores header and bulk
+// pastes (range > 1 cell). Reads DNC ID from col 4 of the same row.
+function onStatusEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    var sheet = e.range.getSheet();
+    if (sheet.getName() !== THROUGHPUT_SHEET_NAME) return;
+
+    // Single-cell edits only. Bulk pastes / fill-down get skipped to
+    // avoid runaway shortcut churn. Run backfillAllShortcuts() manually
+    // if a bulk update needs rendering.
+    if (e.range.getNumRows() !== 1 || e.range.getNumColumns() !== 1) return;
+    if (e.range.getColumn() !== COL_STATUS) return;
+    if (e.range.getRow() < 2) return; // header row
+
+    var row = e.range.getRow();
+    var dncId = sheet.getRange(row, COL_DNC_ID).getValue();
+    var patientName = sheet.getRange(row, COL_PATIENT_NAME).getValue();
+    var newStatus = e.range.getValue();
+
+    if (!dncId) {
+      Logger.log("onStatusEdit: row " + row + " has no DNC ID, skipping");
+      return;
+    }
+
+    renderStatusShortcut(String(dncId), String(patientName || ""), String(newStatus || ""));
+  } catch (err) {
+    Logger.log("onStatusEdit error: " + err);
+  }
+}
+
+// ============================================================
+// CORE RENDERER
+// ============================================================
+// Pure routing function. Removes existing shortcuts from all five status
+// folders, then creates one in the target folder if the status maps to one.
+// Idempotent: re-running with the same inputs produces the same end state.
+function renderStatusShortcut(dncId, patientName, newStatus) {
+  var targetFolderName = statusToFolderName(newStatus);
+
+  // Always purge stale shortcuts first. If status is now in-flight (e.g.
+  // moved from Authorized back to Preauth In Review for some correction),
+  // the shortcut should disappear from Authorized even though no new
+  // status folder gets a shortcut.
+  removeShortcutFromAllStatusFolders(dncId);
+
+  if (!targetFolderName) {
+    Logger.log("renderStatusShortcut: " + dncId + " status '" + newStatus + "' → no folder (in-flight)");
+    return;
+  }
+
+  var targetFolderId = STATUS_FOLDER_IDS[targetFolderName];
+  if (!targetFolderId || targetFolderId.indexOf("PASTE_") === 0) {
+    Logger.log("renderStatusShortcut: " + targetFolderName + " folder ID not configured");
+    return;
+  }
+
+  var patientFolder = findPatientRootFolder(dncId, patientName);
+  if (!patientFolder) {
+    Logger.log("renderStatusShortcut: " + dncId + " patient folder not found in PATIENT_ROOT_FOLDER_ID");
+    return;
+  }
+
+  createShortcut(targetFolderId, patientFolder, dncId, patientName);
+  Logger.log("renderStatusShortcut: " + dncId + " → " + targetFolderName);
+}
+
+// ============================================================
+// SHORTCUT MANAGEMENT
+// ============================================================
+// Iterates all five status folders, trashes any shortcut whose name
+// contains the DNC ID. Used both as cleanup before a new render and
+// as the response to "status moved out of any rendered state."
+function removeShortcutFromAllStatusFolders(dncId) {
+  var folderNames = Object.keys(STATUS_FOLDER_IDS);
+  for (var i = 0; i < folderNames.length; i++) {
+    var fid = STATUS_FOLDER_IDS[folderNames[i]];
+    if (!fid || fid.indexOf("PASTE_") === 0) continue;
+    try {
+      var folder = DriveApp.getFolderById(fid);
+      var files = folder.getFiles();
+      while (files.hasNext()) {
+        var f = files.next();
+        if (f.getName().indexOf(dncId) !== -1) {
+          f.setTrashed(true);
+        }
+      }
+    } catch (err) {
+      Logger.log("removeShortcutFromAllStatusFolders: " + folderNames[i] + " error: " + err);
+    }
+  }
+}
+
+// Looks up the patient's root folder in PATIENT_ROOT_FOLDER_ID.
+// Folder naming convention from main backend: "{Patient Name} - DNC-XXXX"
+// Falls back to DNC-only match if name not provided.
+function findPatientRootFolder(dncId, patientName) {
+  try {
+    var root = DriveApp.getFolderById(PATIENT_ROOT_FOLDER_ID);
+    var folders = root.getFolders();
+    while (folders.hasNext()) {
+      var f = folders.next();
+      if (f.getName().indexOf(dncId) !== -1) return f;
+    }
+  } catch (err) {
+    Logger.log("findPatientRootFolder error: " + err);
+  }
+  return null;
+}
+
+// Creates a Drive shortcut to targetFolder inside the status folder.
+// Shortcut name: "{Name} - DNC-XXXX" so alpha sort matches patient root.
+// Uses Drive Advanced Service API for shortcut creation.
+function createShortcut(statusFolderId, targetFolder, dncId, patientName) {
+  var shortcutName = (patientName ? patientName + " - " : "") + dncId;
+  // Drive API v3 shortcut creation. Requires "Drive API" enabled in
+  // Services panel of the Apps Script editor.
+  try {
+    Drive.Files.create({
+      name: shortcutName,
+      mimeType: "application/vnd.google-apps.shortcut",
+      shortcutDetails: { targetId: targetFolder.getId() },
+      parents: [statusFolderId]
+    });
+  } catch (err) {
+    Logger.log("createShortcut error for " + dncId + ": " + err);
+  }
+}
+
+// ============================================================
+// BACKFILL — run once after first deploy, or as recovery
+// ============================================================
+// Reads every row of Throughput, calls renderer for each. Safe to run
+// repeatedly — idempotent. Use after:
+//   - first deploy to populate folders from existing state
+//   - bulk paste edits that the trigger ignored
+//   - any time shortcuts and sheet drift apart
+function backfillAllShortcuts() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(THROUGHPUT_SHEET_NAME);
+  if (!sheet) {
+    Logger.log("backfillAllShortcuts: sheet '" + THROUGHPUT_SHEET_NAME + "' not found");
+    return;
+  }
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log("backfillAllShortcuts: no data rows");
+    return;
+  }
+  var data = sheet.getRange(2, 1, lastRow - 1, COL_STATUS).getValues();
+  var rendered = 0;
+  var skipped = 0;
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+    var dncId = String(row[COL_DNC_ID - 1] || "").trim();
+    var patientName = String(row[COL_PATIENT_NAME - 1] || "").trim();
+    var status = String(row[COL_STATUS - 1] || "").trim();
+    if (!dncId) { skipped++; continue; }
+    renderStatusShortcut(dncId, patientName, status);
+    rendered++;
+  }
+  Logger.log("backfillAllShortcuts: " + rendered + " rendered, " + skipped + " skipped (no DNC ID)");
+}
+
+// ============================================================
+// SANITY TEST — run before authorizing the trigger
+// ============================================================
+// Verifies:
+//   - Drive auth works (can read PATIENT_ROOT_FOLDER_ID)
+//   - All five STATUS_FOLDER_IDS are populated and accessible
+//   - Status mapping covers expected canonical statuses
+//   - No actual writes — pure read + log
+function testRenderer() {
+  Logger.log("===== testRenderer =====");
+
+  // 1. Drive auth + patient root
+  try {
+    var root = DriveApp.getFolderById(PATIENT_ROOT_FOLDER_ID);
+    Logger.log("✓ Patient root folder accessible: " + root.getName());
+  } catch (err) {
+    Logger.log("✗ Patient root folder error: " + err);
+    return;
+  }
+
+  // 2. All status folders configured + accessible
+  var folderNames = Object.keys(STATUS_FOLDER_IDS);
+  for (var i = 0; i < folderNames.length; i++) {
+    var name = folderNames[i];
+    var fid = STATUS_FOLDER_IDS[name];
+    if (!fid || fid.indexOf("PASTE_") === 0) {
+      Logger.log("✗ Status folder '" + name + "' not configured");
+      continue;
+    }
+    try {
+      var f = DriveApp.getFolderById(fid);
+      Logger.log("✓ Status folder '" + name + "' accessible: " + f.getName());
+    } catch (err) {
+      Logger.log("✗ Status folder '" + name + "' error: " + err);
+    }
+  }
+
+  // 3. Status → folder mapping spot checks
+  var testCases = [
+    { status: "Authorized",                          expect: "Authorized" },
+    { status: "D0 Scheduled",                        expect: "Authorized" },
+    { status: "D0 Complete",                         expect: "Authorized" },
+    { status: "Preauth Submitted",                   expect: "Preauth in Review" },
+    { status: "Preauth In Review",                   expect: "Preauth in Review" },
+    { status: "Trial Billing Submitted",             expect: "Billed" },
+    { status: "Trial Billing Approved",              expect: "Billed" },
+    { status: "Trial Billing Rejected",              expect: "Needs Correction for Billing" },
+    { status: "Trial Billing Rejected: CPT mismatch", expect: "Needs Correction for Billing" },
+    { status: "Preauth Rejected",                    expect: "Preauth Rejected" },
+    { status: "Preauth Rejected: missing doc",       expect: "Preauth Rejected" },
+    { status: "Reimbursed",                          expect: "Reimbursed" },
+    { status: "Referral Received",                   expect: null },
+    { status: "Intake In Progress",                  expect: null },
+    { status: "Awaiting Cosign",                     expect: null },
+    { status: "Cosigned",                            expect: null },
+    { status: "D20 Complete",                        expect: null },
+    { status: "D90 Complete",                        expect: null },
+    { status: "Removed: Patient declined",           expect: null },
+    { status: "Complete",                            expect: null },
+    { status: "",                                    expect: null }
+  ];
+  var passed = 0, failed = 0;
+  for (var t = 0; t < testCases.length; t++) {
+    var c = testCases[t];
+    var actual = statusToFolderName(c.status);
+    if (actual === c.expect) {
+      passed++;
+    } else {
+      failed++;
+      Logger.log("✗ FAIL: '" + c.status + "' → " + actual + " (expected " + c.expect + ")");
+    }
+  }
+  Logger.log("Status mapping: " + passed + " passed, " + failed + " failed of " + testCases.length);
+  Logger.log("===== end testRenderer =====");
+}
+
+function diagnose() {
+  var ids = {
+    "Patient root": "12Xys2cb9C57etSWwCjxiORZk3dTI19mN",
+    "Authorized":   "1M0pxsWulDEv3cyq8S9ve2drt8EHIemR2",
+    "Billed":       "1krkUfclVmFJpoLMWiyT6xACDz4NOeEX0"
+  };
+  for (var name in ids) {
+    try {
+      var f = DriveApp.getFolderById(ids[name]);
+      Logger.log("✓ " + name + ": " + f.getName());
+    } catch(err) {
+      Logger.log("✗ " + name + ": " + err);
+    }
+  }
+  // Also try via Drive Advanced Service (bypasses DriveApp)
+  try {
+    var advanced = Drive.Files.get("12Xys2cb9C57etSWwCjxiORZk3dTI19mN", { supportsAllDrives: true });
+    Logger.log("✓ Patient root via Drive Advanced: " + advanced.name);
+  } catch(err) {
+    Logger.log("✗ Patient root via Drive Advanced: " + err);
+  }
+}
