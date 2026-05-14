@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-13-d0-prefix-match-phone-intake";
+window.__APP_VERSION = "2026-05-13-next-action-chip";
 
 // ============================================================
 // MAINTENANCE REDIRECT
@@ -1066,9 +1066,11 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
   //     Referral" expander rather than dominating the top of the view.
   const [actionFilter, setActionFilter] = useState("needed");
   const [showManualReferral, setShowManualReferral] = useState(false);
-  // Map dncId → most-urgent-action summary, for Refs card badge render (Piece B).
+  // Map dncId → most-urgent-action summary, for Refs card chip render.
   // "Most urgent" = earliest effective deadline (explicit OR SLA-default fallback).
   // count = total open actions for that DNC, used for "+N more" suffix.
+  // Carries rationale + driveFileId so the chip can show the parsed denial
+  // reason and link to the source doc in Drive.
   // Recomputes only when payerQueue changes — render-cheap.
   const mostUrgentByDnc = useMemo(function() {
     var map = {};
@@ -1081,8 +1083,11 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
           actionType: a.actionType,
           deadline: a.deadline,
           deadlineSource: a.deadlineSource,
+          createdAt: a.createdAt || null,
           urgency: urgency,
-          count: (entry ? entry.count : 0) + 1
+          count: (entry ? entry.count : 0) + 1,
+          rationale: a.rationale || null,
+          driveFileId: a.driveFileId || null
         };
       } else {
         entry.count += 1;
@@ -1368,6 +1373,10 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
 useEffect(function() {
     if (view === "cosign") {
       loadCosignQueue();
+      loadPayerQueue();
+    } else if (view === "referrals") {
+      // Refs card next-action chip needs PAQ data. Load in parallel with
+      // referrals; either resolving first renders something useful.
       loadPayerQueue();
     }
   }, [view]);
