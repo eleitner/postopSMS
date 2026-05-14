@@ -36,8 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-13-next-action-chip";
-
+window.__APP_VERSION = "2026-05-14-site-status-filters";
 // ============================================================
 // MAINTENANCE REDIRECT
 // While MAINTENANCE_MODE is true, every visitor is redirected to
@@ -1065,6 +1064,16 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
   //     adding referrals is phase-zero work that lives behind a "+ Manual
   //     Referral" expander rather than dominating the top of the view.
   const [actionFilter, setActionFilter] = useState("needed");
+  // Site + status-bucket filters added 2026-05-14 for implant-day fill workflow.
+  // MAs leading up to a scheduled implant day at a specific site need to see
+  // just the candidates: pre-D0 patients at that site, ideally ranked by
+  // friction-to-schedule. "Ready" = Authorized (any payer) OR auto-approved
+  // payer (Medicare Part B, future BCBS variants) — those we can phone-intake
+  // and slot in within days. "Pre-D0 (all)" is the broad browse view.
+  // Site list is populated dynamically from refs.siteId so new sites appear
+  // automatically without code changes.
+  const [siteFilter, setSiteFilter] = useState("all");
+  const [bucketFilter, setBucketFilter] = useState("all");
   const [showManualReferral, setShowManualReferral] = useState(false);
   // Map dncId → most-urgent-action summary, for Refs card chip render.
   // "Most urgent" = earliest effective deadline (explicit OR SLA-default fallback).
@@ -4157,10 +4166,62 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             // what Action-needed view will show.
             var actionNeededCount = classified.filter(function(c){ return c.chip !== null; }).length;
 
-            // Filter: Action-needed view hides chip-less cards (terminal states
+           // Filter: Action-needed view hides chip-less cards (terminal states
             // + intentionally-silent Explant/Followup per memory #30). All view
             // shows every referral regardless of chip.
             var filtered = actionFilter === "all" ? classified : classified.filter(function(c){ return c.chip !== null; });
+
+            // Site filter (2026-05-14): narrows the board to one site's
+            // candidates for implant-day fill. "unassigned" matches empty
+            // siteId rows (admin fallback bucket). Site options are computed
+            // below from the currently-loaded refs so new sites appear
+            // without code changes.
+            if (siteFilter !== "all") {
+              filtered = filtered.filter(function(c) {
+                var s = String(c.ref.siteId || "").trim();
+                if (siteFilter === "__unassigned__") return !s;
+                return s === siteFilter;
+              });
+            }
+
+            // Bucket filter (2026-05-14): friction-to-schedule view.
+            //   "ready"  — pre-D0 AND (status === Authorized OR payer category
+            //              auto-approved). Authorized = preauth done, just
+            //              book. Auto-approved payer = fast lane, can phone
+            //              intake + schedule within days without waiting on
+            //              preauth response. THIS is the implant-day working
+            //              list.
+            //   "preD0"  — anything pre-D0 not Removed. Broad browse.
+            // Both buckets exclude D0-complete patients (column 9 stamp is
+            // the cleanest signal — avoids status enum drift).
+            if (bucketFilter !== "all") {
+              filtered = filtered.filter(function(c) {
+                var ref = c.ref;
+                if (ref.d0Complete) return false;
+                var status = String(ref.status || "");
+                if (status.indexOf("Removed") === 0) return false;
+                if (bucketFilter === "preD0") return true;
+                if (bucketFilter === "ready") {
+                  var category = (ref.payerLookup && ref.payerLookup.category) || "unknown-needs-verification";
+                  return status === "Authorized" || category === "auto-approved";
+                }
+                return true;
+              });
+            }
+
+            // Available site options from current refs — sorted alphabetically.
+            // Computed AFTER actionFilter but BEFORE site/bucket filters so the
+            // dropdown shows every site present in the action-needed scope.
+            // Otherwise picking a site that's empty under the current bucket
+            // would make the dropdown self-erase, which is disorienting.
+            var siteSet = {};
+            var hasUnassigned = false;
+            classified.forEach(function(c) {
+              var s = String(c.ref.siteId || "").trim();
+              if (!s) { hasUnassigned = true; return; }
+              siteSet[s] = true;
+            });
+            var siteOptions = Object.keys(siteSet).sort();
 
             // Urgency-banded sort: red+pulse → red → amber → blue → gray → none.
             // Within band, oldest referralDate first (patient sitting longest
@@ -4190,15 +4251,55 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       All ({referrals.length})
                     </button>
                   </div>
-                  <button onClick={loadReferrals} className="text-xs text-blue-600 font-medium py-2 px-3 border border-blue-200 rounded">{referralsLoading ? "Loading..." : "Refresh"}</button>
+                 <button onClick={loadReferrals} className="text-xs text-blue-600 font-medium py-2 px-3 border border-blue-200 rounded">{referralsLoading ? "Loading..." : "Refresh"}</button>
+                </div>
+
+                {/* Site + status-bucket dropdowns (2026-05-14). Sits below the
+                    Action-needed toggle so the primary filter stays prominent.
+                    Both default to "all"; together they're the implant-day
+                    fill workflow: pick site, pick "Ready to schedule," see
+                    the working list. py-2 keeps tap targets honest on
+                    Lindsey's iPad. "Clear filters" appears only when at
+                    least one is active. */}
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  <label className="flex items-center gap-1 text-gray-600">
+                    <span>Site:</span>
+                    <select value={siteFilter} onChange={function(e){setSiteFilter(e.target.value)}}
+                      className="border border-gray-300 rounded py-2 px-2 bg-white">
+                      <option value="all">All sites</option>
+                      {siteOptions.map(function(s) {
+                        return <option key={s} value={s}>{s}</option>;
+                      })}
+                      {hasUnassigned && <option value="__unassigned__">Unassigned</option>}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-1 text-gray-600">
+                    <span>Status:</span>
+                    <select value={bucketFilter} onChange={function(e){setBucketFilter(e.target.value)}}
+                      className="border border-gray-300 rounded py-2 px-2 bg-white">
+                      <option value="all">All</option>
+                      <option value="ready">Ready to schedule</option>
+                      <option value="preD0">Pre-D0 (all)</option>
+                    </select>
+                  </label>
+                  {(siteFilter !== "all" || bucketFilter !== "all") && (
+                    <button onClick={function(){setSiteFilter("all"); setBucketFilter("all")}}
+                      className="text-blue-600 underline py-2 px-1">
+                      Clear filters
+                    </button>
+                  )}
                 </div>
 
                 {/* Filter-aware empty state. "Nothing needs action" is a real
                     success state — celebrate it briefly without burying the
-                    All-view escape hatch. */}
+                    All-view escape hatch. Site/bucket filters get their own
+                    message so users don't think the database is empty when
+                    they've just narrowed too far. */}
                 {ordered.length === 0 && !referralsLoading && (
                   <div className="text-center text-gray-400 text-sm py-6">
-                    {actionFilter === "needed" && referrals.length > 0
+                    {(siteFilter !== "all" || bucketFilter !== "all") && referrals.length > 0
+                      ? "No patients match these filters. Try Clear filters above."
+                      : actionFilter === "needed" && referrals.length > 0
                       ? "Nothing needs action right now. Tap All to see every patient."
                       : "No referrals. Tap Refresh to load from database."}
                   </div>
