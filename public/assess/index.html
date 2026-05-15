@@ -4176,11 +4176,17 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             // siteId rows (admin fallback bucket). Site options are computed
             // below from the currently-loaded refs so new sites appear
             // without code changes.
-            if (siteFilter !== "all") {
+          if (siteFilter !== "all") {
               filtered = filtered.filter(function(c) {
-                var s = String(c.ref.siteId || "").trim();
-                if (siteFilter === "__unassigned__") return !s;
-                return s === siteFilter;
+                var raw = String(c.ref.siteId || "").trim();
+                if (siteFilter === "__unassigned__") return !raw;
+                // Multi-valued: matchReferralToSites can tag a patient with
+                // multiple candidate sites (e.g. "SALISBURY,TOWSON" when both
+                // cover MD). A SALISBURY-MA filtering to her site should see
+                // those patients as candidates. Split and check membership
+                // instead of strict equality.
+                var parts = raw.split(",").map(function(p) { return p.trim(); });
+                return parts.indexOf(siteFilter) !== -1;
               });
             }
 
@@ -4214,12 +4220,17 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
             // dropdown shows every site present in the action-needed scope.
             // Otherwise picking a site that's empty under the current bucket
             // would make the dropdown self-erase, which is disorienting.
-            var siteSet = {};
+        var siteSet = {};
             var hasUnassigned = false;
             classified.forEach(function(c) {
-              var s = String(c.ref.siteId || "").trim();
-              if (!s) { hasUnassigned = true; return; }
-              siteSet[s] = true;
+              var raw = String(c.ref.siteId || "").trim();
+              if (!raw) { hasUnassigned = true; return; }
+              // Split multi-valued siteIds so the dropdown shows individual
+              // sites, not Frankenstein "SALISBURY,TOWSON" combos.
+              raw.split(",").forEach(function(p) {
+                var s = p.trim();
+                if (s) siteSet[s] = true;
+              });
             });
             var siteOptions = Object.keys(siteSet).sort();
 
