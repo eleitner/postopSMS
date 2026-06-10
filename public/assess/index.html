@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-05-14-site-status-filters";
+window.__APP_VERSION = "2026-06-10-sessionA-save-integrity";
 // ============================================================
 // MAINTENANCE REDIRECT
 // While MAINTENANCE_MODE is true, every visitor is redirected to
@@ -543,6 +543,75 @@ const defaultState = {
   explantSiteClean: "Yes", explantInduration: "No", explantErythema: "No", explantTolerated: "Yes", explantComplication: "No", explantComplicationDetail: "", explantNotes: "",
 };
 
+// ============ FIELD CLASSIFICATION (Fix 1, 2026-05-16 spec) ============
+// Four-class model. Governs what loadDraft carries into the editable form
+// vs. what starts empty on every load. THE structural fix for the oversave
+// bug: per-visit exam fields can no longer inherit a prior visit's values
+// because they never enter `form` from a draft — prior values render as
+// read-only reference from `referenceData` instead, which buildRow can't see.
+//
+//   C        carry-forward, editable (everything NOT listed below)
+//   Computed age — derived from dob on load, never trusted from a draft
+//   C-delta  medications / priorTx / painDescriptors — carried into form
+//            (they must still appear on generated docs) but UI flags them
+//            as carried; full read-only-until-touched UX is a follow-up
+//   P        per-visit — forced to defaultState empties on EVERY load
+//
+// PER_VISIT_FIELDS is the authoritative P list. If you add a new exam or
+// per-visit narrative field to defaultState, ADD IT HERE TOO or it will
+// silently carry forward — exactly the bug this fix exists to kill.
+const PER_VISIT_FIELDS = [
+  // visit identity — always chosen fresh; wrong-visit-type selection was
+  // half of the 2026-05-16 corruption
+  "visitType", "date",
+  // sensory exam
+  "nrsPainPre", "nrsPainPost", "rmssdPre", "rmssdPost",
+  "leftFootPre", "leftFootPost", "rightFootPre", "rightFootPost",
+  "coinQuarterPre", "coinQuarterPost", "coinDimePre", "coinDimePost",
+  "coinPennyPre", "coinPennyPost",
+  "slsRightSecPre", "slsRightSecPost", "slsRightFallPre", "slsRightFallPost",
+  "slsLeftSecPre", "slsLeftSecPost", "slsLeftFallPre", "slsLeftFallPost",
+  "walkTimePre", "walkTimePost",
+  // pain (current-state, re-assessed every visit)
+  "painRest", "painBest", "painWorst", "painNotes",
+  // per-visit symptom review (self-report H&P answers are visit-dated)
+  "srWounds", "srWoundsLocation", "srBalance", "srBalanceDetail",
+  "srSwelling", "srSwellingLocation", "srBreathing", "srBreathingDetail",
+  "srHeartAwareness", "srHeartAwarenessDetail", "srRhythm", "srRhythmDetail",
+  // per-visit narratives
+  "procedureDaySubjective", "subjective", "plan", "notes",
+  "subjectivePre", "subjectivePost",
+  // explant assessment (belongs to the explant visit only)
+  "explantSiteClean", "explantInduration", "explantErythema",
+  "explantTolerated", "explantComplication", "explantComplicationDetail",
+  "explantNotes"
+];
+const PER_VISIT_SET = {};
+PER_VISIT_FIELDS.forEach(function(f){ PER_VISIT_SET[f] = true; });
+
+// C-delta: carried into form (docs need them) but flagged in UI as carried.
+const CDELTA_FIELDS = ["medications", "priorTx", "painDescriptors"];
+
+// Age: computed from dob, never stored/trusted from drafts. Returns "" if
+// dob unparseable so the carried draft value can be used as fallback.
+function computeAgeFromDob(dob) {
+  if (!dob) return "";
+  var d = new Date(dob);
+  if (isNaN(d.getTime())) {
+    // try MM/DD/YYYY explicitly (Safari is strict)
+    var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(dob).trim());
+    if (!m) return "";
+    d = new Date(Number(m[3]), Number(m[1]) - 1, Number(m[2]));
+    if (isNaN(d.getTime())) return "";
+  }
+  var now = new Date();
+  var age = now.getFullYear() - d.getFullYear();
+  var beforeBirthday = (now.getMonth() < d.getMonth()) ||
+    (now.getMonth() === d.getMonth() && now.getDate() < d.getDate());
+  if (beforeBirthday) age--;
+  return (age >= 0 && age < 130) ? String(age) : "";
+}
+
 // Self-contained stopwatch component. Each instance owns its own state — multiple
 // stopwatches can run independently on the same page. Used inline next to timed
 // measurements (SLS per leg, 10m walk) so MAs don't have to scroll or mentally
@@ -951,6 +1020,19 @@ function chipSortRank(chip) {
 
 function App() {
   const [form, setForm] = useState(defaultState);
+  // Fix 2 (Session A, 2026-06-10): real user-edit gate for autosave. Flipped
+  // true ONLY by the user-edit mutators (set/toggleSite below). Reset false
+  // on loadDraft, fresh-start, and post-submit wipe. Autosave refuses to
+  // fire unless this is true — replacing reliance on the 3s wall-clock
+  // window, which raced slow loads and let autosave write partial/stale
+  // form state to cloud (the mechanism that captured Holloway's corrupted
+  // post-submit state on 2026-05-16, and the June 6 Drafts-tab overwrite).
+  const userTouched = useRef(false);
+  // Fix 1: prior-visit data for read-only reference display. Populated by
+  // loadDraft from the backend's priorVisits array (all Sheet1 rows for the
+  // patient, oldest first). NEVER merged into `form`, never submitted —
+  // structurally unsubmittable. Cleared on fresh-start and patient switch.
+  const [referenceData, setReferenceData] = useState(null);
   const [records, setRecords] = useState([]);
   const [photos, setPhotos] = useState([]);
   const [drafts, setDrafts] = useState({});
@@ -1203,14 +1285,15 @@ const [payerResolving, setPayerResolving] = useState(null); // actionId currentl
     try { storage.set(DIRECTORY_KEY, JSON.stringify(newDir)); } catch(e) {}
     // If this was the current patient, reset form
     if (form.patientId === patientId) {
+      userTouched.current = false;  // Fix 2
       setForm(Object.assign({}, defaultState, { date: todayLocal() }));
       setPatientName("");
     }
     flash("Cleared local data for " + patientId + " (cloud unaffected)");
   }
-  function set(key, val) { setForm(function(f) { var n = Object.assign({}, f); n[key] = val; return n; }); }
-  function toggleSite(key, idx) { setForm(function(f) { var n = Object.assign({}, f); var a = n[key].slice(); a[idx] = !a[idx]; n[key] = a; return n; }); }
-  function toggleMulti(key, val) { setForm(function(f) { var n = Object.assign({}, f); n[key] = toggleInArray(f[key], val); return n; }); }
+  function set(key, val) { userTouched.current = true; setForm(function(f) { var n = Object.assign({}, f); n[key] = val; return n; }); }
+  function toggleSite(key, idx) { userTouched.current = true; setForm(function(f) { var n = Object.assign({}, f); var a = n[key].slice(); a[idx] = !a[idx]; n[key] = a; return n; }); }
+  function toggleMulti(key, val) { userTouched.current = true; setForm(function(f) { var n = Object.assign({}, f); n[key] = toggleInArray(f[key], val); return n; }); }
 
   // Draft save/load
   function switchRole(r) {
@@ -1867,6 +1950,26 @@ useEffect(function() {
   }
 
   function startIntakeFromReferral(ref) {
+    // Resume guard (2026-06-10): if this referral already has a DNC ID, an
+    // intake exists (or was started). RESUME it via loadDraft — do NOT
+    // re-hydrate from card-level data, which would autosave a sparse
+    // skeleton over the rich draft under the same ID. "Start intake" on an
+    // already-intaken patient now means "continue the intake."
+    if (ref.dncId) {
+      flash("Existing intake found for " + (ref.name || ref.dncId) + " — resuming draft");
+      setView("form");
+      setFormSection("intake");
+      loadDraft(ref.dncId, ref.name || "");
+      return;
+    }
+    // Fix 1 companion (2026-06-10): WIPE FIRST. This path bypasses loadDraft,
+    // so the reference-vs-editable split there doesn't protect it. Without
+    // this reset, Start Intake layered the new patient's name/phone onto
+    // whatever was already in the form — referral A → intake → back →
+    // referral B → intake left A's data under B's name. Same disease as
+    // the oversave bug, different door. Reset to defaultState, then hydrate.
+    setForm(Object.assign({}, defaultState, { date: todayLocal() }));
+    setReferenceData(null);
     set("referringProvider", ref.provider || "");
     setPatientName(ref.name || "");
     // Hydrate contact fields directly from the throughput columns
@@ -1897,7 +2000,15 @@ useEffect(function() {
       if (secondary.name) set("insuranceName2", secondary.name);
       if (secondary.memberId) set("memberId2", secondary.memberId);
     }
-    var id = generatePatientId();
+    // Re-mint guard (2026-06-10): REUSE the row's existing DNC ID. The old
+    // unconditional generatePatientId() meant tapping "Start intake" on an
+    // already-intaken patient minted a NEW ID, repointed the throughput row
+    // at it, and the next autosave saved a skeleton draft under the new ID —
+    // orphaning the rich intake draft under the old ID. Symptom: card loads
+    // phone+insurance (throughput fallback) but zero intake data. The rich
+    // draft was never deleted, just unreachable.
+    var id = ref.dncId || generatePatientId();
+    var isExistingId = !!ref.dncId;
     setForm(function(f) { return Object.assign({}, f, { patientId: id, visitType: "Phone Intake", referralRowIndex: ref.rowIndex || "" }); });
     // Seed the referral-corrections snapshot to the values we just hydrated.
     // The diff fires only when one of these changes, so an MA that doesn't
@@ -1920,8 +2031,9 @@ useEffect(function() {
       setDirectory(d);
       try { localStorage.setItem("dncDir", JSON.stringify(d)); } catch(e) {}
     }
-    // Update throughput with DNC ID
-    if (ref.rowIndex) {
+    // Update throughput with DNC ID — only when newly minted. Rewriting an
+    // existing ID is a no-op at best and a race at worst.
+    if (ref.rowIndex && !isExistingId) {
       updateReferralStatus(ref.rowIndex, "dncId", id);
     }
     setView("form");
@@ -2241,6 +2353,9 @@ async function parseMedicareCard(base64Data, isSecondary) {
         // Arrays: pain descriptors, pmhx, prior tx, allergies, contraindications, functional limitations
         // Strict Array.isArray check: Haiku occasionally returns comma-separated strings instead
         // of arrays for these fields. Accept only actual arrays; silently ignore string fallbacks.
+        // Fix 2: parse hydration is user-initiated content — flag it so
+        // autosave persists parsed data even if the MA makes no manual edit.
+        userTouched.current = true;
         if (Array.isArray(p.painDescriptors) && p.painDescriptors.length) setForm(function(f) { return Object.assign({}, f, { painDescriptors: p.painDescriptors }); });
         if (Array.isArray(p.pmhx) && p.pmhx.length) setForm(function(f) { return Object.assign({}, f, { pmhx: p.pmhx }); });
         if (Array.isArray(p.priorTx) && p.priorTx.length) setForm(function(f) { return Object.assign({}, f, { priorTx: p.priorTx }); });
@@ -2275,12 +2390,21 @@ async function parseMedicareCard(base64Data, isSecondary) {
     updated[form.patientId] = draftData;
     setDrafts(updated);
     storage.set(DRAFTS_KEY, JSON.stringify(updated));
-    // Save to cloud
+    // Save to cloud — Fix 3: real CORS, confirmed result. "Draft saved +
+    // cloud" now means the backend actually said ok, not "we threw bytes
+    // at the network."
     if (sheetUrl) {
       var cloudData = Object.assign({}, draftData, { _action: "saveDraft" });
-      fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) })
-        .then(function() { flash("Draft saved locally + cloud"); })
-        .catch(function() { flash("Draft saved locally (cloud failed)", "warn"); });
+      fetch(sheetUrl, { method: "POST", body: JSON.stringify(cloudData) })
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+          if (result && result.status === "ok") {
+            flash("Draft saved locally + cloud ✓");
+          } else {
+            flash("⚠️ Draft saved LOCALLY ONLY — cloud rejected: " + ((result && (result.message || result.status)) || "unknown"), "err");
+          }
+        })
+        .catch(function(err) { flash("⚠️ Draft saved LOCALLY ONLY — cloud unreachable: " + err, "err"); });
     } else {
       flash("Draft saved locally");
     }
@@ -2341,14 +2465,36 @@ async function parseMedicareCard(base64Data, isSecondary) {
     if (Object.keys(diff).length === 0) return;
     diff._action = "updateReferralCorrections";
     diff.rowIndex = form.referralRowIndex;
-    try {
-      fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(diff) });
-      // Update snapshot optimistically. If the POST fails silently (no-cors),
-      // we won't retry until the next field actually changes again — acceptable
-      // tradeoff for not pestering the backend with re-tries.
-      Object.assign(lastReferralSync.current, current);
-    } catch(e) {
-      // Network failure: leave snapshot alone so next autosave retries.
+    // Fix 3: real CORS + snapshot advances ONLY on confirmed write. The old
+    // no-cors version advanced the snapshot optimistically, so a failed
+    // correction was never retried — the throughput row kept the wrong
+    // phone/member ID forever unless the MA edited the field AGAIN. Now a
+    // failed sync leaves the snapshot stale, and the next autosave retries
+    // automatically. Quiet on failure (console only): autosave's own alarm
+    // covers the user-facing signal, and this path self-heals via retry.
+    fetch(sheetUrl, { method: "POST", body: JSON.stringify(diff) })
+      .then(function(r) { return r.json(); })
+      .then(function(result) {
+        if (result && result.status === "ok") {
+          Object.assign(lastReferralSync.current, current);
+        } else {
+          console.warn("Referral correction sync rejected (will retry next autosave):", result);
+        }
+      })
+      .catch(function(err) {
+        console.warn("Referral correction sync failed (will retry next autosave):", err);
+      });
+  }
+
+  // Throttle for autosave-failure flashes: one alarm per 30s, not one per
+  // 1.5s tick. The alarm must be loud (red) but not a strobe.
+  const lastSaveFailFlashAt = useRef(0);
+  function surfaceCloudSaveFailure(detail) {
+    console.warn("Cloud draft save FAILED:", detail);
+    var now = Date.now();
+    if (now - lastSaveFailFlashAt.current > 30000) {
+      lastSaveFailFlashAt.current = now;
+      flash("⚠️ CLOUD SAVE FAILING — intake is LOCAL-ONLY on this device. Do not close this tab. " + detail, "err");
     }
   }
 
@@ -2356,24 +2502,24 @@ async function parseMedicareCard(base64Data, isSecondary) {
     if (!form.patientId) return;
     // Belt-and-suspenders against cross-patient leak: if the patient ID changed
     // between when this autosave was scheduled and when it actually fires,
-    // bail rather than risk writing under the wrong patient. The useEffect's
-    // cleanup function should have already cleared the timer in this case,
-    // but if React batched things weirdly or the fire happened mid-flush,
-    // this guard catches it.
+    // bail rather than risk writing under the wrong patient.
     if (scheduledPatientId && scheduledPatientId !== form.patientId) return;
-    // Suppress autosave in the quiet window after a load. Without this, a
-    // partial cloud draft (one missing some intake fields) loads, the form
-    // populates missing fields with defaultState empties, and 1.5s later
-    // the autosave writes those empties back to cloud — destroying the real
-    // data that was in those fields. The 3-second window is long enough
-    // for a load to settle but short enough that legitimate user edits
-    // (typing into a field shortly after load) aren't suppressed for long.
+    // Fix 2: REAL user-edit gate. Autosave fires only after an actual user
+    // edit (set/toggleSite) since the last load/submit. Programmatic form
+    // population (loadDraft, post-submit reset) can never trigger a save,
+    // no matter how slow the load was. This replaces the 3s wall-clock
+    // window as the primary guard — the window stays below as backup.
+    if (!userTouched.current) return;
     if (Date.now() - justLoadedAt.current < 3000) return;
-    // Guard: don't overwrite cloud draft with empty form. If the form has no name,
-    // no age, no demographics, no clinical content, refuse to save. This prevents
-    // data loss when the form is reset (e.g. after submit, after switching patients,
-    // after page refresh while a stale patientId lingers).
-    var hasContent = patientName || form.age || form.sex || form.dob || form.phone ||
+    // Guard: don't overwrite cloud draft with empty form. HARDENED 2026-06-10:
+    // patientName alone NO LONGER counts as content. Evidence from the master
+    // sheet: 52 of 79 cloud drafts were blank-plus-name husks (~2.7KB), nuked
+    // by board-browsing — open card sets name, load hiccups, autosave passed
+    // hasContent on the name and saved a blank form over the rich draft.
+    // Thirteen drafts destroyed in 34 minutes on 2026-06-09 alone. Name-only
+    // saves protect nothing (throughput already has the name) and destroy
+    // everything.
+    var hasContent = form.age || form.sex || form.dob || form.phone ||
       form.painRest || form.painBest || form.painWorst ||
       form.medications || form.referringProvider ||
       (form.pmhx && form.pmhx.length > 0) ||
@@ -2385,13 +2531,34 @@ async function parseMedicareCard(base64Data, isSecondary) {
     var updated = Object.assign({}, drafts);
     updated[form.patientId] = draftData;
     setDrafts(updated);
-    try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); } catch(e) {}
+    try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); }
+    catch(e) {
+      // Fix 5: localStorage failure (quota, private mode) is no longer
+      // silent — if local persistence is broken AND cloud fails, the MA's
+      // work exists only in React state.
+      console.warn("Local draft persist failed:", e);
+      surfaceCloudSaveFailure("(local storage also failing: " + e + ")");
+    }
     if (sheetUrl) {
+      // Fix 3: real CORS. no-cors made the response unreadable, so failed
+      // saves looked identical to successful ones — MAs completed intakes
+      // that silently never reached the cloud, then re-called patients to
+      // redo them. Apps Script handles simple POSTs (string body, no custom
+      // headers) without preflight; the submit path has used this readable
+      // pattern successfully since launch.
       var cloudData = Object.assign({}, draftData, { _action: "saveDraft" });
-      try {
-        fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(cloudData) });
-        setLastAutoSave(new Date());
-      } catch(e) {}
+      fetch(sheetUrl, { method: "POST", body: JSON.stringify(cloudData) })
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+          if (result && result.status === "ok") {
+            setLastAutoSave(new Date());
+          } else {
+            surfaceCloudSaveFailure("backend: " + ((result && (result.message || result.status)) || "unknown response"));
+          }
+        })
+        .catch(function(err) {
+          surfaceCloudSaveFailure("network: " + err);
+        });
     }
     // After the draft is saved, push any demographic/insurance corrections
     // back to the source throughput row. No-op when this intake didn't come
@@ -2418,6 +2585,8 @@ async function parseMedicareCard(base64Data, isSecondary) {
   async function loadDraft(optionalId, expectedName) {
     var pid = (typeof optionalId === "string" && optionalId) ? optionalId : form.patientId;
     var draftData = null;
+    // Fix 1: prior-visit reference data rides the same loadDraft response.
+    var cloudPriorVisits = null;
 
     // Try cloud first
     // Try cloud first
@@ -2429,6 +2598,7 @@ async function parseMedicareCard(base64Data, isSecondary) {
         var result = await resp.json();
         if (result.status === "ok" && result.draft) {
           draftData = result.draft;
+          cloudPriorVisits = result.priorVisits || null;
           if (result.source === "sheet1_fallback") {
             flash("Loaded from Sheet1 (no draft found, using last submitted visit)", "warn");
           }
@@ -2454,6 +2624,10 @@ async function parseMedicareCard(base64Data, isSecondary) {
       flash("No draft found for " + pid + " — starting fresh", "warn");
       setForm(Object.assign({}, defaultState, { date: todayLocal(), patientId: pid }));
       setPatientName("");
+      userTouched.current = false;  // Fix 2: reset is not a user edit
+      // Fix 1: no prior data for a fresh patient — clear any reference
+      // panel left over from the previously viewed patient.
+      setReferenceData(null);
       // Reset the referral-corrections snapshot too so the next sync diffs
       // against blank, not against the previous patient's values.
       lastReferralSync.current = {
@@ -2467,43 +2641,60 @@ async function parseMedicareCard(base64Data, isSecondary) {
       return;
     }
 
-    // Build the loaded form state.
+    // ============ FIX 1: REFERENCE-VS-EDITABLE SPLIT (2026-06-10) ============
+    // The draft (and Sheet1/Throughput fallback merge) may contain BOTH
+    // patient-level data (C / C-delta: demographics, insurance, device,
+    // history) AND a prior visit's exam data (P: sensory, pain, narratives,
+    // explant). Before this fix, everything was poured into `form`, so a
+    // follow-up visit's form came pre-loaded with the prior visit's exam —
+    // and buildRow faithfully submitted it. Evidence: Holloway DNC-LHHF
+    // 2026-05-16, D90 row Post columns identical to her D0 Post row.
     //
-    // CRITICAL: start from defaultState, then layer draftData on top. Without
-    // this, fields that aren't present in draftData end up undefined on the
-    // form object — and React treats inputs with `value={undefined}` as
-    // UNCONTROLLED, meaning the DOM keeps whatever text it had displayed
-    // before. That was the cross-patient-leak bug surfaced in clinic: when
-    // patient B's draft didn't contain a field that patient A's form had
-    // displayed, B's load left A's text visible in that field. The user
-    // sees A's data in B's record, may trust it, may submit it. Clinical
-    // safety bug.
+    // The split: only C/C-delta keys enter `form`. Every PER_VISIT_FIELDS
+    // key is forced to its defaultState empty, unconditionally, on every
+    // load. Prior exam values go to `referenceData` instead — rendered
+    // read-only, never submitted, structurally incapable of reaching
+    // buildRow. Age is computed from dob, never trusted from a draft.
     //
-    // Starting from defaultState forces every field to a defined value
-    // (empty string, empty array, or the documented default). React then
-    // treats every input as controlled, and the swap is clean.
-    //
-    // The explicit array overrides below are belt-and-suspenders — defaultState
-    // already provides Array(12).fill(false) for the foot grids etc., but
-    // legacy drafts saved before some fields existed may still show up here
-    // and the explicit defaults guarantee correct types.
-    var loaded = Object.assign({}, defaultState, draftData, {
-      date: todayLocal(),
-      // Defensive: arrays that may be missing from Sheet1 fallback or old drafts
-      allergies: (draftData && draftData.allergies) || [],
-      functionalLimitations: (draftData && draftData.functionalLimitations) || [],
-      pmhx: (draftData && draftData.pmhx) || [],
-      priorTx: (draftData && draftData.priorTx) || [],
-      painDescriptors: (draftData && draftData.painDescriptors) || [],
-      dxCodes: (draftData && draftData.dxCodes) || [],
-      contraindications: (draftData && draftData.contraindications) || [],
-      // Sensory arrays: defensive defaults if missing from old drafts, but preserve any saved values
-      leftFootPre: (draftData && draftData.leftFootPre) || Array(12).fill(false),
-      leftFootPost: (draftData && draftData.leftFootPost) || Array(12).fill(false),
-      rightFootPre: (draftData && draftData.rightFootPre) || Array(12).fill(false),
-      rightFootPost: (draftData && draftData.rightFootPost) || Array(12).fill(false),
+    // Starting from defaultState still forces every field defined (the
+    // controlled-input requirement from the earlier cross-patient-leak
+    // fix) — that behavior is preserved; only the carried subset changed.
+    var carried = {};
+    Object.keys(draftData).forEach(function(k) {
+      if (!PER_VISIT_SET[k]) carried[k] = draftData[k];
     });
+    var loaded = Object.assign({}, defaultState, carried, {
+      date: todayLocal(),
+      patientId: pid,
+      // Defensive: C/C-delta arrays that may be missing from Sheet1
+      // fallback or old drafts must stay arrays (controlled inputs).
+      allergies: (carried.allergies) || [],
+      functionalLimitations: (carried.functionalLimitations) || [],
+      pmhx: (carried.pmhx) || [],
+      priorTx: (carried.priorTx) || [],
+      painDescriptors: (carried.painDescriptors) || [],
+      dxCodes: (carried.dxCodes && carried.dxCodes.length) ? carried.dxCodes : defaultState.dxCodes,
+      contraindications: (carried.contraindications) || []
+      // NOTE: foot grids (leftFootPre etc.) are P fields — they get
+      // defaultState's Array(12).fill(false) automatically because they
+      // were never copied into `carried`. No override needed.
+    });
+    // Age: computed from dob wins; carried value only as fallback when
+    // dob is missing/unparseable.
+    var computedAge = computeAgeFromDob(loaded.dob);
+    if (computedAge) loaded.age = computedAge;
     setForm(loaded);
+    // Fix 2: a load is not a user edit — autosave stays off until the user
+    // actually types/taps something.
+    userTouched.current = false;
+    // Prior visits → reference layer (read-only display, never submitted).
+    // cloudPriorVisits is captured from the loadDraft response below; local
+    // fallback has no Sheet1 access so reference may be null offline.
+    setReferenceData(
+      (cloudPriorVisits && cloudPriorVisits.length)
+        ? { priorVisits: cloudPriorVisits }
+        : null
+    );
     // Seed the referral-corrections snapshot from the loaded draft. If this
     // intake originally came from a referral, draft has referralRowIndex AND
     // the demographic fields as they were last saved — we treat those as the
@@ -3343,14 +3534,23 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
 
     setPreauthGenerating(true);
     try {
-      // Save draft first so the patient is findable later
+      // Save draft first so the patient is findable later — Fix 3: real
+      // CORS, confirmed. A failed draft save now ABORTS preauth generation
+      // instead of generating documents from data the cloud never received.
       var draftData = Object.assign({}, form, { savedAt: new Date().toISOString() });
       var updated = Object.assign({}, drafts);
       updated[form.patientId] = draftData;
       setDrafts(updated);
-      storage.set(DRAFTS_KEY, JSON.stringify(updated));
+      try { storage.set(DRAFTS_KEY, JSON.stringify(updated)); }
+      catch(lsErr) { console.warn("Local draft persist failed pre-preauth:", lsErr); }
       var saveDraftPayload = Object.assign({}, draftData, { _action: "saveDraft", patientName: patientName });
-      await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(saveDraftPayload) });
+      var draftResp = await fetch(sheetUrl, { method: "POST", body: JSON.stringify(saveDraftPayload) });
+      var draftResult = await draftResp.json();
+      if (!draftResult || draftResult.status !== "ok") {
+        flash("⚠️ Draft save FAILED — preauth NOT sent. Fix before retrying: " + ((draftResult && (draftResult.message || draftResult.status)) || "unknown"), "err");
+        setPreauthGenerating(false);
+        return;
+      }
 
       // Then generate the preauth packet
       // CRITICAL: userEmail must be included so backend can look up author
@@ -3374,10 +3574,21 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         memberId: form.memberId,
         memberIdConfidence: form.memberIdConfidence
       };
-      await fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
-      flash("Draft saved + preauth packet sent to biller", "ok");
+      // Fix 3: real CORS. The old no-cors version fired this blind and then
+      // unconditionally flashed "sent to biller" — so a failed generation
+      // (bad folder config, missing data, backend error) looked IDENTICAL
+      // to success. MAs trusted it, preauths silently never existed, and
+      // patients sat unprocessed until someone noticed weeks later. Success
+      // message now requires the backend to actually say ok.
+      var genResp = await fetch(sheetUrl, { method: "POST", body: JSON.stringify(payload) });
+      var genResult = await genResp.json();
+      if (genResult && genResult.status === "ok") {
+        flash("✓ Draft saved + preauth packet sent to biller", "ok");
+      } else {
+        flash("⚠️ PREAUTH FAILED — NOT sent to biller: " + ((genResult && (genResult.message || genResult.status)) || "unknown backend error"), "err");
+      }
     } catch(e) {
-      flash("Error: " + e.toString(), "err");
+      flash("⚠️ PREAUTH FAILED — NOT sent: " + e.toString(), "err");
     }
     setPreauthGenerating(false);
   }
@@ -3508,20 +3719,35 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       storage.set(DIRECTORY_KEY, JSON.stringify(updatedDir));
     }
 
-    try { await copyNoteWithPhotos(); } catch(e) {}
+    try { await copyNoteWithPhotos(); }
+    catch(e) { console.warn("copyNoteWithPhotos failed (submit continues):", e); }
     var updated = records.concat([Object.assign({}, row, { id: Date.now() })]);
-    try { storage.set(STORAGE_KEY, JSON.stringify(updated)); setRecords(updated); } catch(e) {}
+    try { storage.set(STORAGE_KEY, JSON.stringify(updated)); setRecords(updated); }
+    catch(e) { console.warn("Local records persist failed:", e); flash("⚠️ Local storage failing — records may not persist on this device", "warn"); }
     // Update draft with latest intake/device data for future visits
     var d = Object.assign({}, drafts);
     d[form.patientId] = Object.assign({}, form, { savedAt: new Date().toISOString() });
     setDrafts(d);
-    try { storage.set(DRAFTS_KEY, JSON.stringify(d)); } catch(e) {}
-    // Also sync the draft to cloud so other devices can load it
+    try { storage.set(DRAFTS_KEY, JSON.stringify(d)); }
+    catch(e) { console.warn("Local draft persist failed post-submit:", e); }
+    // Also sync the draft to cloud so other devices can load it — Fix 3:
+    // real CORS, failure surfaced. Fire-and-forget is acceptable here (the
+    // visit row itself is submitted separately below with full verification)
+    // but the MA deserves to know if cross-device draft sync didn't happen.
     if (sheetUrl) {
-      try {
-        var draftSync = Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName });
-        fetch(sheetUrl, { method: "POST", mode: "no-cors", body: JSON.stringify(draftSync) });
-      } catch(e) {}
+      var draftSync = Object.assign({}, form, { savedAt: new Date().toISOString(), _action: "saveDraft", patientName: patientName });
+      fetch(sheetUrl, { method: "POST", body: JSON.stringify(draftSync) })
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+          if (!result || result.status !== "ok") {
+            console.warn("Post-submit draft sync rejected:", result);
+            flash("⚠️ Cross-device draft sync failed — draft is local to this device", "warn");
+          }
+        })
+        .catch(function(err) {
+          console.warn("Post-submit draft sync failed:", err);
+          flash("⚠️ Cross-device draft sync failed — draft is local to this device", "warn");
+        });
     }
     var sheetOk = false;
     var sheetErr = "";
@@ -3581,6 +3807,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         message: "Saved to Sheet + Drive docs created" + (sheetErr || "")
       });
       // Clear form for next patient on confirmed success
+      userTouched.current = false;  // Fix 2: post-submit wipe is not a user edit
       setForm(defaultState);
       setPhotoPatientId("");
       setPatientName("");
@@ -3598,6 +3825,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         patientName: submittedName,
         message: "Saved locally (no script URL)."
       });
+      userTouched.current = false;  // Fix 2: post-submit wipe is not a user edit
       setForm(defaultState);
       setPhotoPatientId("");
       setPatientName("");
@@ -3686,7 +3914,7 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
   }
 
   function clearAll() { if(confirm("Delete all saved records?")){ storage.delete(STORAGE_KEY); setRecords([]); } }
-  function resetForm() { setForm(Object.assign({}, defaultState, { date: todayLocal() })); setFormSection("intake"); setPatientName(""); }
+  function resetForm() { userTouched.current = false; setForm(Object.assign({}, defaultState, { date: todayLocal() })); setFormSection("intake"); setPatientName(""); }
 
   var ic = "w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400";
   var lc = "block text-xs font-medium text-gray-600 mb-0.5";
@@ -4319,11 +4547,34 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                 {ordered.map(function(c, idx) {
               var ref = c.ref;
               var days = ref.referralDate ? Math.floor((Date.now() - new Date(ref.referralDate).getTime()) / 86400000) : 0;
-              var isStale = days >= 2 && !ref.called && !c.hasContra && c.payerTier.tier !== "red";
+              // Payer category from accumulated Payer Reference table (verified
+              // institutional knowledge: "Auto-approve" / "Preauth needed" /
+              // "Not covered" / "Unknown — verify"). Computed BEFORE the tier
+              // resolution below because effectiveTier consults it.
+              var payerCat = (ref.payerLookup && ref.payerLookup.category) || "unknown-needs-verification";
+              // Effective tier (2026-05-20): Payer Reference master wins over
+              // the classifyPayer regex heuristic. Master encodes verified
+              // institutional knowledge — e.g. BCBS commercial is preauth-
+              // required (reliable, fast turnaround) NOT a red-card unknown.
+              // The heuristic still fires when the master is silent on a
+              // payer, so freshly-parsed referrals still get sensible defaults.
+              //   auto-approved   → green (no preauth concern)
+              //   preauth-required → yellow (known reliable preauth path)
+              //   not-covered     → red (denial expected)
+              //   unknown         → fall back to classifyPayer heuristic
+              // Driving principle: scattered duplicate systems caused the
+              // contradiction where the chip said "Preauth needed" (amber) and
+              // the card said "NOT YET APPROVED" (red) for the same patient.
+              // One source of truth, master-first.
+              var effectiveTier = c.payerTier.tier;
+              if (payerCat === "auto-approved") effectiveTier = "green";
+              else if (payerCat === "preauth-required") effectiveTier = "yellow";
+              else if (payerCat === "not-covered") effectiveTier = "red";
+              var isStale = days >= 2 && !ref.called && !c.hasContra && effectiveTier !== "red";
               var statusColor = ref.status === "Complete" ? "text-green-600" :
                 ref.status === "Intake Complete" ? "text-blue-600" :
                 (c.hasContra) ? "text-purple-700" :
-                (c.payerTier.tier === "red") ? "text-red-700" :
+                (effectiveTier === "red") ? "text-red-700" :
                 isStale ? "text-orange-600" : "text-gray-500";
               // Color precedence (top to bottom, first match wins):
               //   contraindication → PURPLE (clinical, physician judgment)
@@ -4336,15 +4587,12 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
               // Treating both as red was conflating "needs MD review" with
               // "preauth will be denied" — different problems, different owners.
               var cardClass = c.hasContra ? "border-purple-500 bg-purple-50"
-                : c.payerTier.tier === "red" ? "border-red-400 bg-red-50"
-                : c.payerTier.tier === "yellow" ? "border-amber-400 bg-amber-50"
-                : c.payerTier.tier === "green" ? "border-green-300 bg-green-50"
+                : effectiveTier === "red" ? "border-red-400 bg-red-50"
+                : effectiveTier === "yellow" ? "border-amber-400 bg-amber-50"
+                : effectiveTier === "green" ? "border-green-300 bg-green-50"
                 : "border-gray-200 bg-white";
-              // Payer category badge from accumulated Payer Reference table
-              // (separate from the heuristic green/yellow/red tier above).
-              // Shows verified institutional knowledge: "Auto-approve" /
-              // "Preauth needed" / "Not covered" / "Unknown — verify".
-              var payerCat = (ref.payerLookup && ref.payerLookup.category) || "unknown-needs-verification";
+              // Inline payer badge below card header. Uses payerCat directly
+              // (not effectiveTier) so badge wording stays accurate per master.
               var payerBadge = null;
               if (payerCat === "auto-approved") {
                 payerBadge = { text: "⚡ Auto-approve", cls: "bg-green-100 text-green-800" };
@@ -4363,9 +4611,9 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
                       🟣 CONTRAINDICATION — physician review: {c.contraText}
                     </div>
                   )}
-                  {!c.hasContra && c.payerTier.tier === "red" && (
+                  {!c.hasContra && effectiveTier === "red" && (
                     <div className="bg-red-200 text-red-900 rounded px-2 py-1 text-xs font-bold mb-1">
-                      ‼ NOT YET APPROVED: {c.payerTier.reason}
+                      ‼ NOT YET APPROVED: {payerCat === "not-covered" ? (ref.payerLookup && ref.payerLookup.name) || c.payerTier.reason : c.payerTier.reason}
                     </div>
                   )}
                   <div className="flex items-center justify-between">
@@ -5674,6 +5922,78 @@ var preauthDone = s === "Authorized" ||
 
             return (
             <div className="space-y-3">
+              {/* ━━━ FIX 1: PRIOR-VISIT REFERENCE (read-only) ━━━
+                  Rendered from referenceData, which is populated from Sheet1
+                  by loadDraft and NEVER enters the editable form. Shows the
+                  full trajectory so follow-up exams can be compared against
+                  baseline without any prior value sitting in a submittable
+                  field. */}
+              {referenceData && referenceData.priorVisits && referenceData.priorVisits.length > 0 && (function() {
+                var pvs = referenceData.priorVisits;
+                function cell(v, vPost) {
+                  var a = (v === null || v === undefined || v === "") ? "—" : String(v);
+                  var b = (vPost === null || vPost === undefined || vPost === "") ? "" : String(vPost);
+                  return b ? (a + "→" + b) : a;
+                }
+                function coinScore(visit, phase) {
+                  var n = 0, any = false;
+                  ["coinQuarter","coinDime","coinPenny"].forEach(function(c){
+                    var val = visit[c + phase];
+                    if (val === "Yes") { n++; any = true; }
+                    else if (val === "No") { any = true; }
+                  });
+                  return any ? (n + "/3") : "";
+                }
+                var rows = [
+                  { label: "Mono L /12", get: function(v){ return cell(v.leftFootPreCount, v.leftFootPostCount); } },
+                  { label: "Mono R /12", get: function(v){ return cell(v.rightFootPreCount, v.rightFootPostCount); } },
+                  { label: "Coins /3",  get: function(v){ return cell(coinScore(v,"Pre"), coinScore(v,"Post")); } },
+                  { label: "NRS pain",  get: function(v){ return cell(v.nrsPainPre, v.nrsPainPost); } },
+                  { label: "Pain R/B/W", get: function(v){
+                      var parts = [v.painRest, v.painBest, v.painWorst].map(function(x){ return (x===""||x==null)?"—":x; });
+                      return (parts[0]==="—"&&parts[1]==="—"&&parts[2]==="—") ? "—" : parts.join("/");
+                    } },
+                  { label: "SLS R (s)", get: function(v){ return cell(v.slsRightSecPre, v.slsRightSecPost); } },
+                  { label: "SLS L (s)", get: function(v){ return cell(v.slsLeftSecPre, v.slsLeftSecPost); } },
+                  { label: "Walk (s)",  get: function(v){ return cell(v.walkTimePre, v.walkTimePost); } },
+                  { label: "RMSSD",     get: function(v){ return cell(v.rmssdPre, v.rmssdPost); } }
+                ];
+                return (
+                  <div className="bg-indigo-50 border border-indigo-200 rounded p-2">
+                    <div className="text-xs font-bold text-indigo-900 mb-1">
+                      📋 Prior visits (reference only — not editable, not submitted)
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="text-xs text-gray-700">
+                        <thead>
+                          <tr>
+                            <th className="text-left pr-2 py-0.5 font-semibold"></th>
+                            {pvs.map(function(v, i){
+                              return <th key={i} className="text-left pr-3 py-0.5 font-semibold whitespace-nowrap">{(v.visitType || "?") + " " + (v.date ? String(v.date).slice(5) : "")}</th>;
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(function(r, ri){
+                            return (
+                              <tr key={ri} className={ri % 2 ? "" : "bg-indigo-100/40"}>
+                                <td className="pr-2 py-0.5 font-medium whitespace-nowrap">{r.label}</td>
+                                {pvs.map(function(v, vi){
+                                  return <td key={vi} className="pr-3 py-0.5 whitespace-nowrap">{r.get(v)}</td>;
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="text-[10px] text-indigo-700 mt-1">
+                      Pre→Post shown where both exist. Today's exam fields below start empty by design.
+                    </div>
+                  </div>
+                );
+              })()}
+
               {isD90 && (
                 <div className="text-xs text-center text-gray-500 bg-gray-50 py-2 rounded">Single exam (no device in place)</div>
               )}
@@ -6405,9 +6725,8 @@ function AuthGate() {
     try {
       var storedUrl = localStorage.getItem(SHEET_URL_KEY);
       var url = storedUrl || DEFAULT_SHEET_URL;
-      await fetch(url, {
+      var resp = await fetch(url, {
         method: "POST",
-        mode: "no-cors",
         body: JSON.stringify({
           _action: "requestAccess",
           email: emailInput,
@@ -6416,7 +6735,12 @@ function AuthGate() {
           reason: requestReason
         })
       });
-      setRequestSent(true);
+      var reqResult = await resp.json();
+      if (reqResult && reqResult.status === "ok") {
+        setRequestSent(true);
+      } else {
+        setAuthError("Request failed: " + ((reqResult && (reqResult.message || reqResult.status)) || "unknown"));
+      }
     } catch(e) {
       setAuthError("Request failed: " + e.toString());
     }
