@@ -36,7 +36,7 @@
 //
 // Bumping APP_VERSION on every deploy is the trigger. One manual step.
 // ============================================================
-window.__APP_VERSION = "2026-06-10-sessionA-save-integrity";
+window.__APP_VERSION = "2026-06-11-verified-confirmation";
 // ============================================================
 // MAINTENANCE REDIRECT
 // While MAINTENANCE_MODE is true, every visitor is redirected to
@@ -2659,9 +2659,23 @@ async function parseMedicareCard(base64Data, isSecondary) {
     // Starting from defaultState still forces every field defined (the
     // controlled-input requirement from the earlier cross-patient-leak
     // fix) — that behavior is preserved; only the carried subset changed.
+    // ---- Strip condition (corrected 2026-06-10 PM) ----
+    // P fields are stripped ONLY when the patient has submitted Sheet1
+    // visits. With prior visits, the draft is a stale rolling snapshot and
+    // its exam/pain data belongs to a PRIOR visit — strip it; the reference
+    // panel displays it read-only from Sheet1. With NO prior visits, the
+    // draft IS the in-progress intake (phone intake not yet submitted, or
+    // a submit that never landed) — stripping would orphan data that exists
+    // nowhere else (first symptom: Wilder's pain 3/6/10 present in draft,
+    // invisible in form, LOMN would have generated without pain severity).
+    // Resuming an in-progress visit round-trips fully; starting a NEW visit
+    // after submitted ones starts exam-empty. Both honor the spec's intent:
+    // prior-visit data can never silently enter a new visit's submittable
+    // fields.
+    var hasSubmittedVisits = !!(cloudPriorVisits && cloudPriorVisits.length);
     var carried = {};
     Object.keys(draftData).forEach(function(k) {
-      if (!PER_VISIT_SET[k]) carried[k] = draftData[k];
+      if (!hasSubmittedVisits || !PER_VISIT_SET[k]) carried[k] = draftData[k];
     });
     var loaded = Object.assign({}, defaultState, carried, {
       date: todayLocal(),
@@ -3582,13 +3596,49 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       // message now requires the backend to actually say ok.
       var genResp = await fetch(sheetUrl, { method: "POST", body: JSON.stringify(payload) });
       var genResult = await genResp.json();
+      // Success popup is gated on DRIVE READ-BACK VERIFICATION, not just a
+      // 200. Backend returns status "ok" only when every expected doc was
+      // re-fetched by ID and confirmed present in the Preauth folder.
+      // status "verify_failed" = docs may be partially created but did NOT
+      // all verify — treat as failure so the MA never trusts a half-done packet.
       if (genResult && genResult.status === "ok") {
-        flash("✓ Draft saved + preauth packet sent to biller", "ok");
+        var docList = [];
+        if (genResult.verified) {
+          ["hnp","lomn","insurance"].forEach(function(key) {
+            var v = genResult.verified[key];
+            if (v && v.exists && v.inFolder) docList.push({ name: v.name, url: v.url });
+          });
+        }
+        setSubmitResult({
+          success: true,
+          patientName: patientName,
+          message: "Preauth packet created and verified in Drive (" +
+                   genResult.verifiedCount + "/" + genResult.expectedCount +
+                   " documents). Sent to biller.",
+          docs: docList,
+          folderUrl: genResult.folderUrl || null
+        });
+      } else if (genResult && genResult.status === "verify_failed") {
+        setSubmitResult({
+          success: false,
+          patientName: patientName,
+          message: "⚠️ Packet did NOT fully verify in Drive (" +
+                   (genResult.verifiedCount || 0) + "/" + (genResult.expectedCount || "?") +
+                   " documents confirmed). NOT confirmed sent. Do not rely on this — retry, and if it repeats, flag it."
+        });
       } else {
-        flash("⚠️ PREAUTH FAILED — NOT sent to biller: " + ((genResult && (genResult.message || genResult.status)) || "unknown backend error"), "err");
+        setSubmitResult({
+          success: false,
+          patientName: patientName,
+          message: "⚠️ PREAUTH FAILED — NOT sent to biller: " + ((genResult && (genResult.message || genResult.status)) || "unknown backend error")
+        });
       }
     } catch(e) {
-      flash("⚠️ PREAUTH FAILED — NOT sent: " + e.toString(), "err");
+      setSubmitResult({
+        success: false,
+        patientName: patientName,
+        message: "⚠️ PREAUTH FAILED — NOT sent: " + e.toString()
+      });
     }
     setPreauthGenerating(false);
   }
@@ -3751,6 +3801,8 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
     }
     var sheetOk = false;
     var sheetErr = "";
+    var sheetDocs = [];       // verified Drive doc links from backend read-back
+    var sheetFolderUrl = "";  // patient visit folder
     if (sheetUrl) {
       try {
         // Include note text and photos for Google Doc creation
@@ -3781,6 +3833,10 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
         var result = await resp.json();
         if (result.status === "ok") {
           sheetOk = true;
+          // Verified preview links — backend only includes docs that passed
+          // the Drive read-back (re-fetched by ID, confirmed in folder).
+          if (result.docs && result.docs.length) sheetDocs = result.docs;
+          if (result.folderUrl) sheetFolderUrl = result.folderUrl;
           // AUTO-CLEAR photos for this patient: they are now embedded in the Drive docs,
           // localStorage copy is redundant and wastes ~1-2MB per patient. Draft stays so the
           // Sheet1 fallback has a backup loader.
@@ -3804,7 +3860,11 @@ form.dxCodes.map(function(c, i) { return "  " + (i+1) + ". " + c; }).join("\n") 
       setSubmitResult({
         success: true,
         patientName: submittedName,
-        message: "Saved to Sheet + Drive docs created" + (sheetErr || "")
+        message: sheetDocs.length
+          ? ("Saved to Sheet. " + sheetDocs.length + " document" + (sheetDocs.length > 1 ? "s" : "") + " verified in Drive." + (sheetErr || ""))
+          : ("Saved to Sheet + Drive docs created" + (sheetErr || "")),
+        docs: sheetDocs,
+        folderUrl: sheetFolderUrl || null
       });
       // Clear form for next patient on confirmed success
       userTouched.current = false;  // Fix 2: post-submit wipe is not a user edit
@@ -6277,6 +6337,25 @@ var preauthDone = s === "Authorized" ||
               <div className="text-base text-gray-800 mb-1">{submitResult.patientName}</div>
             )}
             <div className="text-sm text-gray-500 mb-5">{submitResult.message}</div>
+            {submitResult.docs && submitResult.docs.length > 0 && (
+              <div className="text-left bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                <div className="text-xs font-semibold text-green-800 mb-2">✓ Verified in Drive:</div>
+                {submitResult.docs.map(function(d, di) {
+                  return (
+                    <a key={di} href={d.url} target="_blank" rel="noopener noreferrer"
+                       className="block text-xs text-blue-600 underline py-1 break-all">
+                      {d.name}
+                    </a>
+                  );
+                })}
+                {submitResult.folderUrl && (
+                  <a href={submitResult.folderUrl} target="_blank" rel="noopener noreferrer"
+                     className="block text-xs text-green-700 font-medium mt-2 pt-2 border-t border-green-200">
+                    📁 Open patient folder
+                  </a>
+                )}
+              </div>
+            )}
             <button onClick={function(){setSubmitResult(null)}}
               className={"w-full py-3 rounded-lg text-base font-semibold text-white " +
                 (submitResult.success ? "bg-green-600 active:bg-green-700" : "bg-red-600 active:bg-red-700")}>
